@@ -1,2 +1,5 @@
 ### 1. hello name
-GET {{localhost}}:{{port}}/hello?name=Spring
+GET {{localhost}}:{{port}}/hello?name=Min
+
+### 2. post hello name
+POST {{localhost}}:{{port}}/hello?name=Min

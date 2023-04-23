@@ -45,3 +45,172 @@ public class HellobootApplication {
 # 서블릿 등록
 
 서블릿 컨테이너 안에 들어가는 웹 컴포넌트인 서블릿을 만들어 등록해보자. 서블릿 컨테이너는 클라이언트의 요청(http)을 받아 매핑 과정을 받아 요청을 처리할 서블릿을 결정한다. 서블릿이 웹 응답을 만들기 위해 필요한 작업을 수행하면 서블릿 컨테이너가 http 응답을 만들어 클라이언트에 반환한다.
+
+
+```java
+public class HellobootApplication {
+
+	public static void main(String[] args) {
+		ServletWebServerFactory serverFactory = new TomcatServletWebServerFactory();
+		WebServer webServer = serverFactory.getWebServer(servletContext -> {
+			servletContext.addServlet("hello", new HttpServlet() {
+				@Override
+				protected void service(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException {
+					resp.setStatus(200);
+					resp.setHeader("Content-Type", "text/plain");
+					resp.getWriter().println("Hello Servlet"); // body
+				}
+			}).addMapping("/hello"); // mapping
+		});
+
+		webServer.start();
+	}
+
+}
+```
+
+위 코드는 /hello URL로 요청이 들어오면 hello 이름을 가진 서블릿이 매핑되어 처리한다. hello 서블릿에서는 응답코드를 200, 헤더 컨텐트 타입은 plain text, 메시지 바디에는 “Hello Servlet”을 작성하여 응답을 만들도록 정의한다. 실제로 서블릿에서 정의한대로 http 응답을 만드는 작업은 서블릿 컨텍스트가 한다.
+
+main으로 톰캣을 띄우고 /hello 로 요청을 보내보면 Hello Servlet이 메시지 바디로 오는 것을 볼 수 있다.
+
+![](Images/image2.png)
+
+# 서블릿 요청 처리
+
+응답을 만드는 부분에 하드코딩한 문자열을 스프링이 제공하는 상수로 변경했고, 파라미터 변수 name을 받아 동적으로 메시지 바디를 작성했다.
+
+```java
+public class HellobootApplication {
+
+	public static void main(String[] args) {
+		ServletWebServerFactory serverFactory = new TomcatServletWebServerFactory();
+		WebServer webServer = serverFactory.getWebServer(servletContext -> {
+			servletContext.addServlet("hello", new HttpServlet() {
+
+				@Override
+				protected void service(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException {
+
+					// url parameter 받아서 동적으로 응답 생성하기
+					String name = req.getParameter("name");
+
+					// 응답 생성 개선 : 하드코딩한 문자열 -> 스프링이 제공하는 상수
+					resp.setStatus(HttpStatus.OK.value());
+					resp.setHeader(HttpHeaders.CONTENT_TYPE, MediaType.TEXT_PLAIN_VALUE);
+					resp.getWriter().println("Hello " + name); // body
+				}
+			}).addMapping("/hello"); // mapping
+		});
+
+		webServer.start();
+	}
+
+}
+```
+
+# 프론트 컨트롤러
+
+위에서 작성한 서블릿의 개수가 백개로 늘어난다고 생각해보자. 서블릿이 실제 처리하는 로직은 조금씩 달라지지만 요청을 받거나 응답을 만드는 부분은 비슷한 코드들이 반복될 것이다. 그리고 모든 서블릿이 공통으로 처리해야하는 인증, 보안, 다국어 처리 등의 동일한 로직이 반복될 것이다. 서블릿이 중복되는 코드들을 가지지 않도록, 중복된 코드를 Front Controller에게 할당하고 이 프론트 컨트롤러에서 url을 매핑하여 서블릿에게 개별 로직을 처리하도록 요청한다. 이때 서블릿은 중복되는 코드를 가지지 않고 응답에 필요한 로직만 가진다.
+
+![Untitled](https://blog.kakaocdn.net/dn/bwQuP6/btq4Cq2vafc/VNito9BZcudNgGyitMKRuK/img.png)
+
+FrontController 서블릿을 등록해보자. 이름을 frontcontroller로 변경했고, 중앙 처리를 해야하므로 모든 url의 요청을 frontcontroller로 들어오도록 만들었다.
+
+```java
+public class HellobootApplication {
+
+	public static void main(String[] args) {
+		ServletWebServerFactory serverFactory = new TomcatServletWebServerFactory();
+		WebServer webServer = serverFactory.getWebServer(servletContext -> {
+			servletContext.addServlet("frontcontroller", new HttpServlet() {
+
+				@Override
+				protected void service(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException {
+
+					// 서블릿의 공통 기능 처리...
+
+					// mapping
+					if (req.getRequestURI().equals("/hello") && req.getMethod().equals(HttpMethod.GET.name())) {
+						String name = req.getParameter("name");
+						resp.setStatus(HttpStatus.OK.value());
+						resp.setHeader(HttpHeaders.CONTENT_TYPE, MediaType.TEXT_PLAIN_VALUE);
+						resp.getWriter().println("Hello " + name); // body
+					}
+					else if (req.getRequestURI().equals("/user")) {
+						//
+					}
+					else {
+						resp.setStatus(HttpStatus.NOT_FOUND.value());
+					}
+
+				}
+			}).addMapping("/*"); // 중앙 처리
+		});
+
+		webServer.start();
+	}
+
+}
+```
+
+이 코드에서 url과 method를 매핑하여 hello name을 동적으로 반환하는 응답을 만들었다. 그런데 보통 frontcontroller에서는 매핑까지만 담당하고, 실제 실행되는 서블릿은 요청을 통해 응답을 만든다. (클래스는 적은 책임을 가져야한다) 이 부분을 분리해보자.
+
+# Hello 컨트롤러 매핑과 바인딩
+
+전에 만들어두었던 HelloController에서 스프링 부트와 관련된 애노테이션을 제거하여 순수한 자바 객체로 만든다. 이 객체는 매개변수로 받은 name에 Hello를 붙여 동적인 문자열을 만드는 책임을 가진다. 프론트 컨트롤러에서 /hello로 매핑되는 서블릿이 실제로 할 일을 여기에서 담당한다.
+
+```java
+public class HelloController {
+    public String hello(String name) {
+        return "Hello " + name;
+    }
+}
+```
+
+이제 프론트 컨트롤러에서 /hello get으로 들어온 요청을 HelloController에게 위임하도록 하자. 프론트 컨트롤러에서 http 요청 정보를 담은 req에서 name을 추출하여 HelloController에게 메시지로 전달한다. HelloController에서 만든 동적인 문자열을 ret에 담아 http 응답인 resp에 담는다. 이렇게 보면 프론트 컨트롤러는 http 요청에서 값을 추출하여 서블릿 객체에게 메시지를 호출할 때 함께 넘겨주고, 서블릿이 만든 결과물을 http에 담는다. 마지막으로 서블릿 컨테이너가 이 http 응답을 웹 클라이언트에게 넘겨줄 것이다. 여기서 핵심은 http 요청 응답과 관련된 코드와 서블릿이 실행해야하는 핵심 코드를 객체로 분리했다는 것이다. 이것을 바인딩이라고 한다. (사실 객체지향의 관점에서 보면 너무 당연한 것)
+
+```java
+public class HellobootApplication {
+
+	public static void main(String[] args) {
+		ServletWebServerFactory serverFactory = new TomcatServletWebServerFactory();
+		WebServer webServer = serverFactory.getWebServer(servletContext -> {
+
+			HelloController helloController = new HelloController();
+
+			servletContext.addServlet("frontcontroller", new HttpServlet() {
+
+				@Override
+				protected void service(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException {
+
+					// 서블릿의 공통 기능 처리...
+
+					// mapping
+					if (req.getRequestURI().equals("/hello") && req.getMethod().equals(HttpMethod.GET.name())) {
+						// req
+						String name = req.getParameter("name");
+
+						// binding - 요청, 응답을 만드는 코드와 컴포넌트 처리 코드를 분리
+						// 프론트 컨트롤러 - 요청 객체에서 컴포넌트가 사용하는 타입으로 전환, 응답 만들기
+						String ret = helloController.hello(name);
+
+						// resp
+						resp.setStatus(HttpStatus.OK.value());
+						resp.setHeader(HttpHeaders.CONTENT_TYPE, MediaType.TEXT_PLAIN_VALUE);
+						resp.getWriter().println(ret);
+					}
+					else if (req.getRequestURI().equals("/user")) {
+						//
+					}
+					else {
+						resp.setStatus(HttpStatus.NOT_FOUND.value());
+					}
+
+				}
+			}).addMapping("/*"); // 중앙 처리
+		});
+
+		webServer.start();
+	}
+
+}
+```
