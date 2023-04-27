@@ -280,3 +280,235 @@ public class HellobootApplication {
 ```
 
 HellobootApplication 클래스는 스프링 컨테에너에 첫번째 빈으로 등록된다. HellobootApplication 안에 전체 애플리케이션을 등록하는데 필요한 정보를 넣어서 빈을 등록할 수 있다. 팩토리 메소드를 정의하여 자바 코드로 빈을 등록하는 방법을 알아보았다.
+
+# Component Scan
+
+스프링 빈을 등록하는 더 간결한 방법을 알아보자. 스프링으로 등록하고 싶은 빈의 클래스에 `@Component` 애노테이션을 붙이는 방식이다. 설정 정보 스캔을 시작하는 위치에 `@Configuration`을 붙일 때 `@ComponentScan`을 추가하면, 스프링 컨테이너가 빈 등록을 위해 스캔할 때 `@Component`가 붙은 모든 빈을 스프링 빈으로 등록한다.
+
+```java
+@Component
+@RequestMapping
+public class HelloController { }
+
+@Component
+public class SimpleHelloService implements HelloService { }
+
+@Configuration @ComponentScan
+public class HellobootApplication {}
+```
+
+## 의존관계 주입 방법 비교 - 설정 파일 vs 애노테이션
+
+컴포넌트 스캔을 사용하는 방법이 관례가 되었다.
+
+xml 설정 파일이나 팩토리 메소드를 사용하는 방법과 비교했을 때, Component Scan은 개별 모듈에 애노테이션 하나만 붙이면 되기 때문에 스프링 빈을 간결하게 등록할 수 있다는 장점이 있다. 하지만 빈의 개수가 엄청나게 많아지면 주입 관계를 파악하기 어렵다는 단점이 있다. 그럼에도 객체지향적으로 모듈화를 잘 해놓았다면 어느 빈이 어디서 등록되는지 파악하는 것이 어렵지 않다.
+
+## @Bean vs @Component
+
+`@Bean` 어노테이션은 **메서드**에 붙여서 해당 메서드가 생성한 객체를 스프링 애플리케이션 컨텍스트에 등록하도록 지정하는 역할을 한다. 주로 외부 라이브러리나 프레임워크에서 제공하는 객체를 스프링 애플리케이션 컨텍스트에 등록하고 싶을 때 사용한다.
+
+`@Component` 어노테이션은 해당 **클래스**를 스프링 컨테이너가 관리하는 빈으로 등록하는 역할을 합니다. `@Component` 어노테이션을 사용하면 해당 클래스를 **직접 생성자를 통해 객체를 생성하여 사용**할 수 있습니다.
+
+## @Component를 확장한 계층형 컴포넌트
+
+`@Component`을 가지고 있는 애노테이션을 붙여도 동일하게 해당 클래스를 빈으로 등록한다. `@Component` 를  메타 애노테이션으로 가지는 애노테이션에는 우리가 알고 있는 `@Service`, `@Controller` 등이 그 예이다. 이 클래스를 스프링 빈으로 등록하면서 특정 계층의 컴포넌트임을 알려주는 주석의 역할을 한다.
+
+```java
+@Target(ElementType.TYPE)
+@Retention(RetentionPolicy.RUNTIME)
+@Documented
+**@Component**
+public @interface Controller { }
+
+@Target(ElementType.TYPE)
+@Retention(RetentionPolicy.RUNTIME)
+@Documented
+**@Component**
+public @interface Service { }
+```
+
+이번에는 `@Controller`을 메타 애노테이션을 가지고 있는 `@RestController`을 살펴보자.
+
+```java
+@Target(ElementType.TYPE)
+@Retention(RetentionPolicy.RUNTIME)
+@Documented
+**@Controller
+@ResponseBody** 
+```
+
+RestController는 Controller을 메타 애노테이션으로 가지며, Controller은 Component를 메타 애노테이션으로 가지므로 컴포넌트로 등록된다. 동시에 @ResponseBody를 가지는데, 응답을 만들 때 뷰 리졸버를 찾는 대신 메시지 바디에 값을 작성하는 기능을 가진다. RestController를 붙이면 스프링 컨테이너가 이 클래스를 뒤져서 매핑된 메소드를 찾아 매핑 테이블을 만들기 때문에 기존 컨트롤러에 붙어있던 @RequestMapping이 없어도 잘 동작한다.
+
+```java
+@RestController
+public class HelloController { }
+```
+
+# Bean의 생명주기 메소드
+
+main에 남아있는 서블릿 컨테이너 팩토리와 디스패처 서블릿을 스프링 빈으로 등록해서 스프링 컨테이너가 관리하도록 하면, 유연한 구성이 가능해진다. 서버를 재시작하지 않고도 동적으로 빈을 수정하거나 추가할 수 있다.예를 들어, 스프링 빈으로 등록된 서블릿 컨테이너 팩토리를 사용하면, 동일한 서블릿 컨테이너 인스턴스에서 여러 웹 애플리케이션을 호스팅할 수 있다. 또한, 다른 프로토콜을 사용하거나 서버의 기본 구성을 변경하려면 스프링 빈으로 등록된 웹 서버 객체를 수정해서 사용한다.
+
+이 main 코드에서 ServletWebServerFactory과 DispatcherServlet을 스프링 빈으로 등록해보자.
+
+```java
+@Configuration @ComponentScan
+public class HellobootApplication {
+
+	public static void main(String[] args) {
+		AnnotationConfigWebApplicationContext applicationContext = new AnnotationConfigWebApplicationContext() {
+			@Override
+			protected void onRefresh() {
+				super.onRefresh();
+
+				// 서블릿 컨테이너 초기화
+				ServletWebServerFactory serverFactory = new TomcatServletWebServerFactory();
+				WebServer webServer = serverFactory.getWebServer(servletContext -> {
+					servletContext.addServlet("dispatcherServlet",
+							new DispatcherServlet(this)) // applicationContext
+					.addMapping("/*"); // 중앙 처리
+				});
+
+				webServer.start();
+			}
+		};
+
+		applicationContext.register(HellobootApplication.class);
+
+	}
+
+}
+```
+
+ServletWebServerFactory과 DispatcherServlet은 스프링이 제공하는 클래스이므로 컴포넌트 스캔을 사용할 수 없다. 팩토리 메소드로 만들고 @Bean으로 등록하자. 이때 DispatcherServlet은 애플리케이션 컨텍스트를 필요로 하므로, main 안에서 세터로 주입한다.
+
+```java
+@Configuration @ComponentScan
+public class HellobootApplication {
+
+	@Bean
+	public ServletWebServerFactory servletWebServerFactory() {
+		return new TomcatServletWebServerFactory();
+	}
+
+	@Bean
+	public DispatcherServlet dispatcherServlet() {
+		return new DispatcherServlet(); // spring container 필요
+	}
+
+	public static void main(String[] args) {
+		AnnotationConfigWebApplicationContext applicationContext = new AnnotationConfigWebApplicationContext() {
+			@Override
+			protected void onRefresh() {
+				super.onRefresh();
+
+				// 서블릿 컨테이너 초기화
+				ServletWebServerFactory serverFactory = this.getBean(ServletWebServerFactory.class);
+				DispatcherServlet dispatcherServlet = this.getBean(DispatcherServlet.class);
+				dispatcherServlet.setApplicationContext(this); // 생략 가능
+
+				WebServer webServer = serverFactory.getWebServer(servletContext -> {
+					servletContext.addServlet("dispatcherServlet", dispatcherServlet) // applicationContext
+					.addMapping("/*"); // 중앙 처리
+				});
+
+				webServer.start();
+			}
+		};
+
+		applicationContext.register(HellobootApplication.class);
+
+	}
+
+}
+```
+
+그런데 신기하게도 DispatcherServlet에 애플레케이션 컨텍스트를 주입하는 코드를 생략해도 의존관계 주입을 멀쩡하게 수행한다. 이것이 가능한 것은 우리 대신 스프링 컨테이너가 DispatcherServlet에 애플레케이션 컨텍스트를 주입해주기 때문이다. 이것을 이해하려면 빈의 라이프 사이클 메소드를 이해해야한다.
+
+DispatcherServlet이 구현하는 인터페이스 중 ApplicationContextAware을 살펴보면 다음과 같이 ApplicationContext를 주입하는 세터 메소드가 있다. 빈을 컨테이너가 등록하고 관리하는 중에 컨테이너가 관리하는 오브젝트를 빈에 주입하는 라이프 사이클 메소드이다. 디스패처 서블릿이 스프링 컨테이너에 의해 빈으로 등록되는 시점에서, 스프링 컨테이너가 디스패처 서블릿이 ApplicationContextAware 인터페이스를 가지므로 애플리케이션 컨텍스트를 세터로 주입해준 것이다. 애플리케이션 컨텍스트는 자기 자신을 빈으로 등록해서 사용하는 것을 짐작해볼 수 있다.
+
+```java
+/**
+ * Interface to be implemented by any object that wishes to be notified
+ * of the {@link ApplicationContext} that it runs in.
+ *
+ * <p>Implementing this interface makes sense for example when an object
+ * requires access to a set of collaborating beans. Note that configuration
+ * via bean references is preferable to implementing this interface just
+ * for bean lookup purposes.
+ *
+ */
+public interface ApplicationContextAware extends Aware {
+
+	void setApplicationContext(ApplicationContext applicationContext) throws BeansException;
+
+}
+```
+
+최종적으로 디스패처 서블릿을 팩토리 메소드에서 애플리케이션 컨텍스트 주입 없이 생성자로 사용하더라도 의존관계 주입이 잘 일어나는 것을 알 수 있다.
+
+# SpringBootApplication
+
+이제 main 메소드에 있는 서블릿 컨테이너와 디스패처 등록 코드를 재사용 가능하도록 해보자. main 로직을 run() 메소드로 추출했고, 이 안에서 달라지는 부분은 스캔을 시작하는 클래스 파일이므로 매개변수로 받도록 변경했다. 이 코드를 `MySpringApplication`로 추출했고 main에서 이 클래스의 run을 호출하도록 했다.
+
+```java
+public class MySpringApplication {
+
+    public static void run(Class<?> applicationClass, String... args) {
+        AnnotationConfigWebApplicationContext applicationContext = new AnnotationConfigWebApplicationContext() {
+            @Override
+            protected void onRefresh() {
+                super.onRefresh();
+
+                ServletWebServerFactory serverFactory = this.getBean(ServletWebServerFactory.class);
+                DispatcherServlet dispatcherServlet = this.getBean(DispatcherServlet.class);
+
+                WebServer webServer = serverFactory.getWebServer(servletContext -> {
+                    servletContext.addServlet("dispatcherServlet", dispatcherServlet) // applicationContext
+                            .addMapping("/*");
+                });
+
+                webServer.start();
+            }
+        };
+
+        applicationContext.register(applicationClass); // 매번 달라짐
+        applicationContext.refresh();
+    }
+}
+
+@Configuration @ComponentScan
+public class HellobootApplication {
+
+	@Bean
+	public ServletWebServerFactory servletWebServerFactory() {
+		return new TomcatServletWebServerFactory();
+	}
+
+	@Bean
+	public DispatcherServlet dispatcherServlet() {
+		return new DispatcherServlet(); // spring container 필요
+	}
+
+	public static void main(String[] args) {
+		MySpringApplication.run(HellobootApplication.class, args);
+	}
+
+}
+```
+
+HellobootApplication의 main을 보면 스프링 이니셜라이저로 만든 코드의 main과 크게 다르지 않다.
+
+```java
+@SpringBootApplication
+public class HellobootApplication {
+
+	public static void main(String[] args) {
+		SpringApplication.run(HellobootApplication.class, args);
+	}
+
+}
+```
+
+물론 빈 등록이나 클래스에 붙은 애노테이션은 다르지만, 스프링 부트의 SpringApplication가 서블릿 컨테이너와 디스패처 서블릿을 등록하는 등의 서블릿 관련 작업을 포장해서 제공하는 것을 알 수 있다.
+
+이로써 스프링 부트가 standalone으로 서블릿 컨테이너를 포함하는 스프링 애플리케이션을 동작시키는 원리를 살펴보았다.
