@@ -221,3 +221,129 @@ public class TomcatWebServerConfig {
 ## @Conditional Target
 
 @Conditional 애노테이션은 클래스 레벨과 빈 메소드 레벨에 붙을 수 있다. 클래스 레벨 조건이 참이면 전부 빈 메소드에 등록하는데, 이때 빈 메소드 조건이 거짓이면 실행하지 않는다. 클래스 레벨 조건 거짓이면 내부 빈 메소드 들여다보지도 않으므로 빈이 등록되지 않는다.
+
+# 학습 테스트
+
+학습 테스트를 통해 Conditional 조건을 확장하는 연습을 해볼 수 있다.
+
+## True, False Conditional 구현
+
+우선 Conditional을 적용할 수 있는 빈을 만들고, ApplicationContextRunner을 이용해 테스트해보자.
+
+Config1은 빈으로 등록할 후보이고, Config2는 빈으로 등록하지 않을 후보이다. 각각 true와 false를 리턴하는 matches를 구현한 TrueCondition, FalseCondition을 만들었고 이 클래스를 사용하는 @Conditional을 메타 애노테이션으로 갖는 @TrueConditional과 @FalseConditional을 만들어 Config1, Config2에 지정했다.
+
+ApplicationContextRunner는 테스트에서 간단하게 사용할 수 있는 애플리케이션 컨텍스트이다. 빈이 등록됐는지 간단하게 예외 없이 확인할 수 있다는 장점이 있다.
+
+```java
+public class ConditionalTest {
+
+    @Test
+    public void conditional() {
+        // 빈을 등록할 애플리케이션 컨텍스트
+        // ApplicationContextRunner 테스트용 애.컨 - 빈이 등록됐는지 간단하게 예외 없이 확인 가능
+
+        // true
+        ApplicationContextRunner contextRunner = new ApplicationContextRunner();
+        contextRunner.withUserConfiguration(Config1.class)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(MyBean.class);
+                    assertThat(context).hasSingleBean(Config1.class);
+                });
+
+        // false
+        new ApplicationContextRunner().withUserConfiguration(Config2.class)
+                .run(context -> {
+                    assertThat(context).doesNotHaveBean(MyBean.class);
+                    assertThat(context).doesNotHaveBean(Config1.class);
+                });
+
+    }
+
+		@Configuration
+    @TrueConditional
+    static class Config1 {
+        @Bean
+        MyBean myBean() {
+            return new MyBean();
+        }
+    }
+
+    @Configuration
+    @FalseConditional
+    static class Config2 {
+        @Bean
+        MyBean myBean() {
+            return new MyBean();
+        }
+    }
+
+    static class MyBean { }
+
+		@Retention(RetentionPolicy.RUNTIME)
+    @Target(ElementType.TYPE)
+    @Conditional(TrueCondition.class)
+    @interface TrueConditional { }
+
+    @Retention(RetentionPolicy.RUNTIME)
+    @Target(ElementType.TYPE)
+    @Conditional(FalseCondition.class)
+    @interface FalseConditional { }
+
+    static class TrueCondition implements Condition {
+        @Override
+        public boolean matches(ConditionContext context, AnnotatedTypeMetadata metadata) {
+            return true;
+        }
+    }
+
+    static class FalseCondition implements Condition {
+        @Override
+        public boolean matches(ConditionContext context, AnnotatedTypeMetadata metadata) {
+            return false;
+        }
+    }
+
+}
+```
+
+## 애노테이션의 애트리뷰트를 이용해 조건 판단하기
+
+위에서 True와 False를 따로 만들었던 것을 애노테이션의 애트리뷰트로 하나로 합칠 수 있다. boolean 필드를 갖는 @BooleanConditional을 만들어 컨피그에 붙이고, BooleanCondition의 matches에서 메타 정보를 읽어 value 값에 따라 등록 여부를 반환하면 된다.
+
+```java
+@Configuration
+@BooleanConditional(value = true)
+static class Config1 {
+	@Bean
+	MyBean myBean() {
+		return new MyBean();
+	}
+}
+
+@Configuration
+@BooleanConditional(value = false)
+static class Config2 {
+	@Bean
+	MyBean myBean() {
+		return new MyBean();
+	}
+}
+
+@Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.TYPE)
+@Conditional(BooleanCondition.class)
+@interface BooleanConditional {
+	boolean value();
+}
+
+static class BooleanCondition implements Condition {
+	@Override
+	public boolean matches(ConditionContext context, AnnotatedTypeMetadata metadata) {
+		// AnnotatedTypeMetadata : 애노테이션이 적용된 환경의 메타 정보 ex) Config1, Config2의 메타 정보
+		// metadata.getAnnotationAttributes(String annotationName) : 메타 정보에서 애트리뷰트만 불러오기
+		Map<String, Object> annotationAttributes = metadata.getAnnotationAttributes(BooleanConditional.class.getName());
+		// annotationAttributes.forEach((s, o) -> System.out.println("key : "+s+", value : "+o));
+		return (Boolean) annotationAttributes.get("value");
+	}
+}
+```
