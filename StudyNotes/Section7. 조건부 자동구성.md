@@ -347,3 +347,128 @@ static class BooleanCondition implements Condition {
 	}
 }
 ```
+
+# 커스텀 @Conditional
+
+스프링 부트가 빈 등록의 조건으로 사용하는 대표적인 시나리오는 **현재 어떤 라이브러리가 이 프로젝트에 포함**되어있는가이다. 라이브러리에 제티 서버가 있으면 제티를 띄우고, 없으면 톰캣을 띄우는 식으로 말이다.
+
+톰캣 내장서버의 핵심 클래스는 `package org.apache.catalina.startup`에, 제티 내장서버의 핵심 클래스는 `package org.eclipse.jetty.server`에 들어있다. 이 클래스가 존재하는지를 확인해서 조건을 구성하면 된다.
+
+## isPresent
+
+이 클래스가 프로젝트에 포함되어있는지 확인하기 위해 Spring이 제공하는 유틸리티를 활용한다. `isPresent`를 사용하여 클래스의 풀 패키지 경로로 클래스 유무를 확인할 수 있다.
+
+```java
+// Tomcat Condition
+static class TomcatCondition implements Condition {
+	@Override
+	public boolean matches(ConditionContext context, AnnotatedTypeMetadata metadata) {
+		return ClassUtils.isPresent("org.apache.catalina.startup.Tomcat", context.getClassLoader());
+	}
+}
+
+// Jetty Condition
+static class JettyCondition implements Condition {
+	@Override
+	public boolean matches(ConditionContext context, AnnotatedTypeMetadata metadata) {
+		return ClassUtils.isPresent("org.eclipse.jetty.server.Server", context.getClassLoader());
+	}
+}
+```
+
+Gradle에서 제티와 톰캣 라이브러리 의존성을 제거하여 조건 자동구성을 확인할 수 있다. 상위 모듈 아래 포함된 라이브러리는 다음과 같이 제거할 수 있다.
+
+```
+dependencies {
+	implementation ('org.springframework.boot:spring-boot-starter-web') {
+		exclude group: 'org.springframework.boot', module: 'spring-boot-starter-tomcat'
+	}
+
+	implementation 'org.springframework.boot:spring-boot-starter-jetty'
+	testImplementation 'org.springframework.boot:spring-boot-starter-test'
+}
+```
+
+## 메타 애노테이션 활용
+
+애노테이션 안에 matches 코드가 반복되므로 메타 애노테이션으로 분리해서 중복을 없애자. 풀 패키지 경로를 필드로 받아서 Utils로 isPresent로 존재 유무를 확인하는 애노테이션을 만들고, 이 애노테이션을 메타 애노테이션으로 갖는 애노테이션을 만들어 컨피그 클래스에 사용한다.
+
+```java
+public class MyOnClassCondition implements Condition {
+    @Override
+    public boolean matches(ConditionContext context, AnnotatedTypeMetadata metadata) {
+        Map<String, Object> attrs = metadata.getAnnotationAttributes(ConditionalMyOnClass.class.getName());
+        String value = (String) attrs.get("value");
+        return ClassUtils.isPresent(value, context.getClassLoader());
+    }
+}
+
+@Retention(RetentionPolicy.RUNTIME)
+@Target({ElementType.TYPE, ElementType.METHOD})
+@Conditional(MyOnClassCondition.class)
+public @interface ConditionalMyOnClass {
+    String value(); // 이런 클래스가 존재하는가
+}
+
+@MyAutoConfiguration
+@ConditionalMyOnClass("org.apache.catalina.startup.Tomcat")
+public class TomcatWebServerConfig {
+
+    @Bean("tomcatWebServerFactory")
+    public ServletWebServerFactory servletWebServerFactory() {
+        return new TomcatServletWebServerFactory();
+    }
+
+}
+
+@MyAutoConfiguration
+@ConditionalMyOnClass("org.eclipse.jetty.server.Server")
+public class JettyWebServerConfig {
+
+    @Bean("jettyWebServerFactory")
+    public ServletWebServerFactory servletWebServerFactory() {
+        return new JettyServletWebServerFactory();
+    }
+
+}
+```
+
+# 자동 구성 정보 대체하기
+
+스프링 부트가 자기 주장대로 실행하는 빈 메소드의 오브젝트를 무시하고 내가 만든 커스텀 컨피그를 사용하도록 구성정보를 변경할 수 있다. 커스텀 컨피그 클래스는 사용자 구성정보 등록하듯 컴포넌트 스캔을 사용하되, 자동 구성정보로 정의되는 빈을 대신해 등록된다.
+
+스프링 부트가 자동으로 넣어주는 인프라 스트럭처 빈은 개발하면서 신경 쓰지 않아도 된다. 하지만 개발 도중 필요에 의해 기술과 관련된 인프라 스트럭처 빈을 직접 등록해야하는 경우가 있다. 컨디셔널 애노테이션을 확장해서 사용한다.
+
+애플리케이션 패키지에 다음과 같이 9090번 포트로 서버를 띄우는 톰캣 내장서버 빈을 정의한다. @Configuration을 사용했으므로 컴포넌트 스캔에 의해 등록된다.
+
+```java
+package tobyspring.helloboot;
+
+@Configuration(proxyBeanMethods = false) // 메소드 호출로 의존관계 주입할 것이 아니므로
+public class WebServerConfiguration {
+    @Bean
+    ServletWebServerFactory customWebServerFactory() {
+        TomcatServletWebServerFactory serverFactory = new TomcatServletWebServerFactory();
+        serverFactory.setPort(9090);
+        return serverFactory;
+    }
+}
+```
+
+이때 스프링이 자동으로 등록하는 톰캣 서버와 충돌이 나기 때문에 컨디셔널로 조건을 등록해야한다. 유저 구성정보를 먼저 스캔한 후 자동 구성정보를 스캔하므로, 자동 구성정보에 있는 톰캣 빈에 조건을 추가해 ServletWebServerFactory 타입 빈의 등록 유무를 확인한다. 스프링이 제공하는 `@ConditionalOnMissingBean`를 사용한다. 유저 구성정보의 우선순위가 더 높아진다.
+
+```java
+@MyAutoConfiguration
+@ConditionalMyOnClass("org.apache.catalina.startup.Tomcat")
+public class TomcatWebServerConfig {
+
+    @Bean("tomcatWebServerFactory")
+    @ConditionalOnMissingBean // ServletWebServerFactory 타입 빈이 없으면 이 빈을 등록
+    public ServletWebServerFactory servletWebServerFactory() {
+        return new TomcatServletWebServerFactory();
+    }
+
+}
+```
+
+스프링 부트로 프로젝트를 처음 만들면 스프링 부트가 설정해놓은 자동 구성정보에 의해 인프라 스트럭처 빈이 자동으로 등록된다. 하지만 개발을 하다가 내가 원하는 인프라 스트럭처 빈을 등록하고 싶다면 @Conditional을 확장해 자동 구성 빈을 대체할 수 있다. 따라서 스프링 부트로 빠르게 시작하고, 개발을 하는 단계에서 스프링의 자동 구성정보를 걷어내는 방식으로 개발을 할 수 있다. 그런데 스프링 부트가 워낙 잘 구성을 해놓아서 대부분 그대로 사용해도 된다. ^^
