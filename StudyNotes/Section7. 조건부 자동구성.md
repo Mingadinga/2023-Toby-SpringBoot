@@ -472,3 +472,65 @@ public class TomcatWebServerConfig {
 ```
 
 스프링 부트로 프로젝트를 처음 만들면 스프링 부트가 설정해놓은 자동 구성정보에 의해 인프라 스트럭처 빈이 자동으로 등록된다. 하지만 개발을 하다가 내가 원하는 인프라 스트럭처 빈을 등록하고 싶다면 @Conditional을 확장해 자동 구성 빈을 대체할 수 있다. 따라서 스프링 부트로 빠르게 시작하고, 개발을 하는 단계에서 스프링의 자동 구성정보를 걷어내는 방식으로 개발을 할 수 있다. 그런데 스프링 부트가 워낙 잘 구성을 해놓아서 대부분 그대로 사용해도 된다. ^^
+
+
+# 스프링 부트의 @Conditional
+
+스프링 부트가 제공하는 자동 구성정보가 어떻게 만들어져있는지 확인해본다. 스프링 부트는 @Conditional을 확장하여 자동 구성정보를 제공한다. 스프링 부트가 제공하는 자동구성이 어떤 조건을 만족할 때 어떤 빈이 등록되는지 알고 있어야 커스톰 빈을 등록해 대체할 수 있다. 특히 직접 만든 기술이나 스프링 부트가 지원하지 않는 기술을 빈으로 등록해야할 때 필요하다.
+
+> `@ConditionalOnClass` 클래스와 `@ConditionalOnMissingBean` 조합은 가장 대표적으로 사용하는 방식이다. 클래스의 존재로 해당 기술 사용 여부를 판단하고, 직접 추가한 커스톰 빈 구성의 존재를 확인해서 자동 구성의 빈 오브젝트를 이용할지 최종 결정한다.
+>
+
+## Class Conditions
+
+- `@ConditionalOnClass`
+- `@ConditionalOnMissingClass`
+
+지정한 클래스의 프로젝트 내 존재를 확인해서 포함 여부를 결정한다.
+
+주로 @Configuration 클래스 레벨에서 사용한다. 클래스 레벨이 거짓이면 내부 메소드는 확인하지 않는다. 클래스 레벨이 참이면 내부 메소드의 조건도 확인해서 빈으로 등록한다.
+
+이 애노테이션을 클래스에 사용하지 않고 빈 메소드에 사용하면 불필요하게 메모리에 올라오는 빈이 생기므로, 클래스 레벨에 사용해야한다.
+
+## Bean Conditions
+
+- `@ConditionalOnBean`
+- `@ConditionalOnMissingBean`
+
+빈의 존재 여부를 기준으로 포함여부를 결정한다. 빈의 타입 또는 이름을 지정한다. 지정된 빈 정보가 없으면 메소드의 리턴 타입을 기준으로 빈의 존재 여부를 체크한다.
+
+`@ConditionalOnMissingBean`은 컨테이너에 등록된 빈 정보를 기준으로 체크하기 때문에 적용 순서가 중요하다. 스프링이 자동구성을 할 때 사용자 구성정보(애플리케이션 빈)를 먼저 읽고 외부파일을 읽기 때문에, 사용자 구성정보를 우선하려는 경우 안전하다. 반면 커스톰 빈 구성정보에 적용하는건 피해야한다.
+
+## 스프링의 @Profile
+
+어떤 환경에서 해당 Bean을 사용할지를 결정하는 애노테이션. 개발 환경, 운영 환경, 테스트 환경 등 서로 다른 환경에서 실행할 때, 특정 프로파일에 맞게 설정된 빈만 사용하도록 제한할 수 있다. 예를 들어`@Profile("dev")` 애노테이션이 지정된 빈을 등록한 후, `spring.profiles.active` 시스템 프로퍼티를 "dev"로 설정하면 해당 빈이 활성화된다.
+
+@Profile도 내부적으로 @Conditional을 사용하여 빈 등록 환경을 구분한다. 현재 활성화된 환경의 빈이라면 빈으로 등록한다.
+
+```java
+@Target({ElementType.TYPE, ElementType.METHOD})
+@Retention(RetentionPolicy.RUNTIME)
+@Documented
+@Conditional(ProfileCondition.class)
+public @interface Profile { 
+	String[] value();
+}
+
+class ProfileCondition implements Condition {
+
+	@Override
+	public boolean matches(ConditionContext context, AnnotatedTypeMetadata metadata) {
+		MultiValueMap<String, Object> attrs = metadata.getAllAnnotationAttributes(Profile.class.getName());
+		if (attrs != null) {
+			for (Object value : attrs.get("value")) {
+				if (context.getEnvironment().acceptsProfiles(Profiles.of((String[]) value))) {
+					return true;
+				}
+			}
+			return false;
+		}
+		return true;
+	}
+
+}
+```
