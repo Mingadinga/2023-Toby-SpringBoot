@@ -28,7 +28,17 @@ public class HelloServiceTest {
 
     @FastUnitTest
     public void simpleHelloService() {
-        SimpleHelloService helloService = new SimpleHelloService();
+        SimpleHelloService helloService = new SimpleHelloService(new HelloRepository() {
+            @Override
+            public Hello findHello(String name) {
+                return null;
+            }
+
+            @Override
+            public void increaseCount(String name) {
+
+            }
+        });
         String res = helloService.sayHello("Test");
         assertThat(res).isEqualTo("Hello Test");
     }
