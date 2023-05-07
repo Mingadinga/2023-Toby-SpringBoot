@@ -42,3 +42,265 @@
 
 - 자동구성되는 빈(스프링 fw, 자바 표준, 오픈소스 기술 등)을 잘 모르는 경우, 용도 정도만 공부해두면 나중에 활용할 수 있음.
 - 프로퍼티가 enum 타입인 경우, 어떤 옵션을 사용할 수 있는지 스프링 레퍼런스 확인. 라이브러리가 추가되는 경우에 따라 조건을 다르게 줄 수도 있다.
+
+# 자동 구성 조건 결과 확인
+
+스프링부트가 자동구성을 어떤 식으로 준비하는지 확인해보자. 어떠한 dependency도 추가하지 않은 스프링부트는 스프링 컨테이너만 stand alone으로 동작한다. 스프링부트의 core만 띄웠을 때 어떤 자동구성 빈들이 올라오는지 알아보자.
+
+VM 옵션에 debug를 사용하여 애플리케이션을 다시 실행해보자.
+
+![스크린샷 2023-05-08 오전 7.18.08.png](https://s3-us-west-2.amazonaws.com/secure.notion-static.com/3f9f0b14-f783-408b-81ce-b94bc2915176/%E1%84%89%E1%85%B3%E1%84%8F%E1%85%B3%E1%84%85%E1%85%B5%E1%86%AB%E1%84%89%E1%85%A3%E1%86%BA_2023-05-08_%E1%84%8B%E1%85%A9%E1%84%8C%E1%85%A5%E1%86%AB_7.18.08.png)
+
+다음과 같이 등록 후보 빈들이 콘솔 창에 찍힌다.
+
+- Positive matches : Condition을 통과한 컨피그 빈. Aop, 캐시, Jmx(Java Management Extension), 라이프 사이클, property place holder, Sql, TaskExecution
+- Negative matches : 조건을 통과하지 못한 컨피그 빈. 클래스가 존재하지 않아서 조건을 통과하지 못함.
+
+그런데 디버깅을 사용하는 방식은 모든 빈이 출력되어 방대하고, 관심 있는 부분만 보기 어렵다는 단점이 있다. 이번엔 ConditionEvaluationReport 객체를 사용해 로그를 추출하거나 조작해보자.
+
+```java
+@SpringBootApplication
+public class SpringbootAcApplication {
+
+    @Bean
+    ApplicationRunner run(ConditionEvaluationReport report) {
+        return args -> {
+            // 조건을 통과했고 Jmx 문자열이 포함되지 않음
+            report.getConditionAndOutcomesBySource().entrySet().stream()
+                    .filter(co -> co.getValue().isFullMatch())
+                    .filter(co -> co.getKey().indexOf("Jmx") < 0)
+                    // 통과한 빈과 조건 출력
+                    .forEach(co -> {
+                        System.out.println(co.getKey());
+                        co.getValue().forEach(c -> System.out.println("\t"+c.getOutcome()));
+                        System.out.println();
+                    });
+        };
+    }
+
+    public static void main(String[] args) {
+        SpringApplication.run(SpringbootAcApplication.class, args);
+    }
+
+}
+```
+
+위의 예시처럼 자바 코드로 조건을 걸거나 원하는 정보를 로그(ConditionEvaluationReport)로부터 출력할 수 있다. 조건을 filter로 걸고, 각 빈의 정보는 key나 valuef에서 추출할 수 있다.
+
+# Core 자동 구성 살펴보기
+
+## AopAutoConfiguration
+
+설정값의 key는 [spring.aop.name](http://spring.aop.name) 이다. havingValue 값이 true이면 등록되고, 만약 만족하는 조건이 없다면 등록되도록 했다. 그래서 별다른 설정 없이도 Aop 컨피그가 등록되었다.
+
+```java
+@AutoConfiguration
+@ConditionalOnProperty(prefix = "spring.aop", name = "auto", havingValue = "true", matchIfMissing = true)
+public class AopAutoConfiguration { }
+```
+
+AopAutoConfiguration 내부에 후보로 있는 빈을 살펴보자. AspectJ 기반 Aop 컨피그는 Advice.class 클래스가 존재하는 경우 등록된다. 반면 클래스 기반 컨피그는 Advice.class 경로로 클래스를 찾을 수 없다면 등록된다. 그래서 클래스 기반의 aop 컨피그가 등록되어 프록시 기반으로 동작한다.
+
+```java
+@AutoConfiguration
+@ConditionalOnProperty(prefix = "spring.aop", name = "auto", havingValue = "true", matchIfMissing = true)
+public class AopAutoConfiguration {
+
+	@Configuration(proxyBeanMethods = false)
+	@ConditionalOnClass(Advice.class)
+	static class AspectJAutoProxyingConfiguration {
+
+		@Configuration(proxyBeanMethods = false)
+		@EnableAspectJAutoProxy(proxyTargetClass = false)
+		@ConditionalOnProperty(prefix = "spring.aop", name = "proxy-target-class", havingValue = "false")
+		static class JdkDynamicAutoProxyConfiguration {
+
+		}
+
+		@Configuration(proxyBeanMethods = false)
+		@EnableAspectJAutoProxy(proxyTargetClass = true)
+		@ConditionalOnProperty(prefix = "spring.aop", name = "proxy-target-class", havingValue = "true",
+				matchIfMissing = true)
+		static class CglibAutoProxyConfiguration {
+
+		}
+
+	}
+
+	@Configuration(proxyBeanMethods = false)
+	@ConditionalOnMissingClass("org.aspectj.weaver.Advice")
+	@ConditionalOnProperty(prefix = "spring.aop", name = "proxy-target-class", havingValue = "true",
+			matchIfMissing = true)
+	static class ClassProxyingConfiguration {
+
+		@Bean
+		static BeanFactoryPostProcessor forceAutoProxyCreatorToUseClassProxying() {
+			return (beanFactory) -> {
+				if (beanFactory instanceof BeanDefinitionRegistry) {
+					BeanDefinitionRegistry registry = (BeanDefinitionRegistry) beanFactory;
+					AopConfigUtils.registerAutoProxyCreatorIfNecessary(registry);
+					AopConfigUtils.forceAutoProxyCreatorToUseClassProxying(registry);
+				}
+			};
+		}
+
+	}
+
+}
+```
+
+## 캐시
+
+[Spring Boot Reference Documentation](https://docs.spring.io/spring-boot/docs/current/reference/htmlsingle/#io.caching)
+
+기본 구현체로 simple provider가 제공되며, 캐시를 설정하고 싶다면 `spring.cache.cache-names` 속성을 지정하면 된다.
+
+스타터 모듈을 추가했을 때 사용 가능한 캐시 기술은 다음과 같고, CacheManager과 CacheResolver에 의존한다. (PSA)
+
+1. [Generic](https://docs.spring.io/spring-boot/docs/current/reference/htmlsingle/#io.caching.provider.generic)
+2. [JCache (JSR-107)](https://docs.spring.io/spring-boot/docs/current/reference/htmlsingle/#io.caching.provider.jcache) (EhCache 3, Hazelcast, Infinispan, and others)
+3. [Hazelcast](https://docs.spring.io/spring-boot/docs/current/reference/htmlsingle/#io.caching.provider.hazelcast)
+4. [Infinispan](https://docs.spring.io/spring-boot/docs/current/reference/htmlsingle/#io.caching.provider.infinispan)
+5. [Couchbase](https://docs.spring.io/spring-boot/docs/current/reference/htmlsingle/#io.caching.provider.couchbase)
+6. [Redis](https://docs.spring.io/spring-boot/docs/current/reference/htmlsingle/#io.caching.provider.redis)
+7. [Caffeine](https://docs.spring.io/spring-boot/docs/current/reference/htmlsingle/#io.caching.provider.caffeine)
+8. [Cache2k](https://docs.spring.io/spring-boot/docs/current/reference/htmlsingle/#io.caching.provider.cache2k)
+9. [Simple](https://docs.spring.io/spring-boot/docs/current/reference/htmlsingle/#io.caching.provider.simple)
+
+캐시를 적용하려면 다음과 같이 클래스나 메소드에 @Cacheable을 붙인다.
+
+```java
+@Component
+public class MyMathService {
+
+    @Cacheable("piDecimals")
+    public int computePiDecimal(int precision) {
+        ...
+    }
+
+}
+```
+
+## PropertyPlaceholderAutoConfiguration
+
+@Value(치환자)에 해당하는 값을 외부 설정 파일로부터 찾아서 값을 주입하는 빈 후처리기다.
+
+```java
+@AutoConfiguration
+@AutoConfigureOrder(Ordered.HIGHEST_PRECEDENCE)
+public class PropertyPlaceholderAutoConfiguration {
+
+	@Bean
+	@ConditionalOnMissingBean(search = SearchStrategy.CURRENT)
+	public static PropertySourcesPlaceholderConfigurer propertySourcesPlaceholderConfigurer() {
+		return new PropertySourcesPlaceholderConfigurer();
+	}
+
+}
+```
+
+- @AutoConfigureOrder(Ordered.HIGHEST_PRECEDENCE) : 최우선으로 생성해라
+- @ConditionalOnMissingBean(search = SearchStrategy.CURRENT) : 현재 컨텍스트에서만 PropertySourcesPlaceholderConfigurer 타입의 빈을 검색하고, 존재하지 않으면 이 빈을 생성한다.
+
+[SearchStrategy (Spring Boot 3.0.6 API)](https://docs.spring.io/spring-boot/docs/current/api/org/springframework/boot/autoconfigure/condition/SearchStrategy.html)
+
+@ConditionalOnMissingBean의 SearchStrategy 타입으로 다음과 같은 값을 사용할 수 있다.
+
+- **`[ALL](https://docs.spring.io/spring-boot/docs/current/api/org/springframework/boot/autoconfigure/condition/SearchStrategy.html#ALL)` :** Search the entire hierarchy.
+- **`[ANCESTORS](https://docs.spring.io/spring-boot/docs/current/api/org/springframework/boot/autoconfigure/condition/SearchStrategy.html#ANCESTORS)`** : Search all ancestors, but not the current context.
+- **`[CURRENT](https://docs.spring.io/spring-boot/docs/current/api/org/springframework/boot/autoconfigure/condition/SearchStrategy.html#CURRENT)`** : Search only the current context.
+
+## TaskExecutionAutoConfiguration
+
+스레드 풀을 제공하는 인프라 스트럭처 빈.
+
+이 컨피그에서 등록되는 빈은 applicationTaskExecutor, taskExecutorBuilder으로, applicationTaskExecutor이 등록될 때 빌더 빈을 주입 받아서 사용한다. 스프링에는 이처럼 빌더를 빈으로 등록해서 재사용 가능하도록 만드는 경우가 꽤 있다.
+
+```java
+@ConditionalOnClass(ThreadPoolTaskExecutor.class)
+@AutoConfiguration
+@EnableConfigurationProperties(TaskExecutionProperties.class)
+public class TaskExecutionAutoConfiguration {
+
+	/**
+	 * Bean name of the application {@link TaskExecutor}.
+	 */
+	public static final String APPLICATION_TASK_EXECUTOR_BEAN_NAME = "applicationTaskExecutor";
+
+	@Bean
+	@ConditionalOnMissingBean
+	public TaskExecutorBuilder taskExecutorBuilder(TaskExecutionProperties properties,
+			ObjectProvider<TaskExecutorCustomizer> taskExecutorCustomizers,
+			ObjectProvider<TaskDecorator> taskDecorator) {
+		TaskExecutionProperties.Pool pool = properties.getPool();
+		TaskExecutorBuilder builder = new TaskExecutorBuilder();
+		builder = builder.queueCapacity(pool.getQueueCapacity());
+		builder = builder.corePoolSize(pool.getCoreSize());
+		builder = builder.maxPoolSize(pool.getMaxSize());
+		builder = builder.allowCoreThreadTimeOut(pool.isAllowCoreThreadTimeout());
+		builder = builder.keepAlive(pool.getKeepAlive());
+		Shutdown shutdown = properties.getShutdown();
+		builder = builder.awaitTermination(shutdown.isAwaitTermination());
+		builder = builder.awaitTerminationPeriod(shutdown.getAwaitTerminationPeriod());
+		builder = builder.threadNamePrefix(properties.getThreadNamePrefix());
+		builder = builder.customizers(taskExecutorCustomizers.orderedStream()::iterator);
+		builder = builder.taskDecorator(taskDecorator.getIfUnique());
+		return builder;
+	}
+
+	@Lazy
+	@Bean(name = { APPLICATION_TASK_EXECUTOR_BEAN_NAME,
+			AsyncAnnotationBeanPostProcessor.DEFAULT_TASK_EXECUTOR_BEAN_NAME })
+	@ConditionalOnMissingBean(Executor.class)
+	public ThreadPoolTaskExecutor applicationTaskExecutor(TaskExecutorBuilder builder) {
+		return builder.build();
+	}
+
+}
+```
+
+빌더를 만드는데 사용되는 Properties이다. 참고로 `ThreadPoolTaskExecutor`에서는 코어 사이즈를 1로 바꿔서 사용한다. 이처럼 스프링부트에서 제공하는 클래스의 기본값을 알고 값을 변경해 사용할 수 있어야 한다.
+
+```java
+@ConfigurationProperties("spring.task.execution")
+public class TaskExecutionProperties {
+
+	private final Pool pool = new Pool();
+
+	private final Shutdown shutdown = new Shutdown();
+
+	private String threadNamePrefix = "task-";
+
+	public static class Pool {
+
+		/**
+		 * Queue capacity. An unbounded capacity does not increase the pool and therefore
+		 * ignores the "max-size" property.
+		 */
+		private int queueCapacity = Integer.MAX_VALUE;
+
+		/**
+		 * Core number of threads.
+		 */
+		private int coreSize = 8;
+
+		/**
+		 * Maximum allowed number of threads. If tasks are filling up the queue, the pool
+		 * can expand up to that size to accommodate the load. Ignored if the queue is
+		 * unbounded.
+		 */
+		private int maxSize = Integer.MAX_VALUE;
+
+		/**
+		 * Whether core threads are allowed to time out. This enables dynamic growing and
+		 * shrinking of the pool.
+		 */
+		private boolean allowCoreThreadTimeout = true;
+
+		/**
+		 * Time limit for which threads may remain idle before being terminated.
+		 */
+		private Duration keepAlive = Duration.ofSeconds(60);
+}
+```
+
