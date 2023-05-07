@@ -1,13 +1,13 @@
 package tobyspring.helloboot;
 
 import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.jdbc.core.JdbcTemplate;
-import tobyspring.config.MySpringBootApplication;
 
 import javax.annotation.PostConstruct;
 
 
-@MySpringBootApplication
+@SpringBootApplication
 public class HellobootApplication {
 
 	private final JdbcTemplate jdbcTemplate;
@@ -18,7 +18,6 @@ public class HellobootApplication {
 
 	@PostConstruct
 	void init() {
-		System.out.println(jdbcTemplate);
 		jdbcTemplate.execute("create table if not exists hello(name varchar(50) primary key, count int)");
 	}
 
