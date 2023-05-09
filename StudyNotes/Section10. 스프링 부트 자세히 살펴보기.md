@@ -304,3 +304,368 @@ public class TaskExecutionProperties {
 }
 ```
 
+# Web 자동 구성 살펴보기
+
+build.gradle에 web 모듈을 추가하자.
+
+```
+dependencies {
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+}
+```
+
+![스크린샷 2023-05-09 오전 9.44.46.png](https://s3-us-west-2.amazonaws.com/secure.notion-static.com/98424d0e-91ef-429a-9343-68fa65d02a12/%E1%84%89%E1%85%B3%E1%84%8F%E1%85%B3%E1%84%85%E1%85%B5%E1%86%AB%E1%84%89%E1%85%A3%E1%86%BA_2023-05-09_%E1%84%8B%E1%85%A9%E1%84%8C%E1%85%A5%E1%86%AB_9.44.46.png)
+
+json, tomcat, web, web mvc 등의 모듈이 추가된 것을 알 수 있다.
+
+main에 정의해둔 ConditionEvaluationReport를 실행해보면 총 62개의 빈이 등록되는 것을 확인할 수 있다.🫢 중요한 빈 위주로 확인해보자.
+
+## HttpMessageConvertersAutoConfiguration
+
+`HttpMessageConverter`는 요청 본문의 내용을 자바 객체로 변환하거나 자바 객체를 응답 본문으로 변환하는데 사용한다. 예를 들어, JSON 형식의 데이터와 자바 객체 변환, String과 text plain의 변환 등이 가능하다.
+
+```java
+@AutoConfiguration(
+		after = { GsonAutoConfiguration.class, JacksonAutoConfiguration.class, JsonbAutoConfiguration.class })
+@ConditionalOnClass(HttpMessageConverter.class)
+@Conditional(NotReactiveWebApplicationCondition.class)
+@Import({ JacksonHttpMessageConvertersConfiguration.class, GsonHttpMessageConvertersConfiguration.class,
+		JsonbHttpMessageConvertersConfiguration.class })
+public class HttpMessageConvertersAutoConfiguration { }
+```
+
+이 컨피그 클래스는 HttpMessageConverter 클래스가 라이브러리로 임포트된 경우 내부의 빈과 Import로 지정된 컨피그 등록을 시도한다. 추가 의존성이 있는 컨피그로 Jackson, Gson, Jsonb이 있는 것을 알 수 있다.
+
+```java
+public class HttpMessageConvertersAutoConfiguration {
+
+	static final String PREFERRED_MAPPER_PROPERTY = "spring.mvc.converters.preferred-json-mapper";
+
+	@Bean
+	@ConditionalOnMissingBean
+	public HttpMessageConverters messageConverters(ObjectProvider<HttpMessageConverter<?>> converters) {
+		return new HttpMessageConverters(converters.orderedStream().collect(Collectors.toList()));
+	}
+
+	@Configuration(proxyBeanMethods = false)
+	@ConditionalOnClass(StringHttpMessageConverter.class)
+	protected static class StringHttpMessageConverterConfiguration {
+
+		@Bean
+		@ConditionalOnMissingBean
+		public StringHttpMessageConverter stringHttpMessageConverter(Environment environment) {
+			Encoding encoding = Binder.get(environment).bindOrCreate("server.servlet.encoding", Encoding.class);
+			StringHttpMessageConverter converter = new StringHttpMessageConverter(encoding.getCharset());
+			converter.setWriteAcceptCharset(false);
+			return converter;
+		}
+
+	}
+	
+	// NotReactiveWebApplicationCondition
+}
+```
+
+안에 있는 빈을 보면 StringHttpMessageConverter이 있다면 해당 빈을 등록해서 String을 plain text로 변환하고, 아니면 기본 HttpMessageConverters를 사용한다.
+
+## **JacksonObjectMapperConfiguration**
+
+`ObjectMapper`는 Jackson 라이브러리에서 제공하는 클래스 중 하나로, JSON 데이터와 Java 객체 간의 변환을 담당하는 클래스이다.
+
+`JacksonObjectMapperConfiguration`는 Jackson 라이브러리가 클래스패스에 있는 경우에만 빈으로 등록된다. 이후에는 `Jackson2ObjectMapperBuilder` 클래스를 사용하여 기본적인 설정값을 지정하고, 필요에 따라 커스터마이징 할 수 있는 `ObjectMapper` 빈을 생성한다.
+
+```java
+@AutoConfiguration
+@ConditionalOnClass(ObjectMapper.class)
+public class JacksonAutoConfiguration {
+	@Configuration(proxyBeanMethods = false)
+	@ConditionalOnClass(Jackson2ObjectMapperBuilder.class)
+	static class JacksonObjectMapperConfiguration {
+
+		@Bean
+		@Primary
+		@ConditionalOnMissingBean
+		ObjectMapper jacksonObjectMapper(Jackson2ObjectMapperBuilder builder) {
+			return builder.createXmlMapper(false).build();
+		}
+
+	}
+}
+```
+
+Jackson2ObjectMapperBuilder를 빈으로 등록하는 컨피그이다. 빌더에는 Jackson2ObjectMapper를 구성하는 필드가 나열되어있다. 이 OpjectMapper는 다양한 설정단위를 허용하여, 우선순위에 따라 최종으로 적용할 설정값을 정한다. 따라서 매개변수로 Cusomizer List을 주입 받아서 최종 적용할 설정값을 정한다.
+
+```java
+@AutoConfiguration
+@ConditionalOnClass(ObjectMapper.class)
+public class JacksonAutoConfiguration {
+
+	@Configuration(proxyBeanMethods = false)
+	@ConditionalOnClass(Jackson2ObjectMapperBuilder.class)
+	static class JacksonObjectMapperBuilderConfiguration {
+
+		@Bean
+		@Scope("prototype")
+		@ConditionalOnMissingBean
+		Jackson2ObjectMapperBuilder jacksonObjectMapperBuilder(ApplicationContext applicationContext,
+				List<Jackson2ObjectMapperBuilderCustomizer> customizers) {
+			Jackson2ObjectMapperBuilder builder = new Jackson2ObjectMapperBuilder();
+			builder.applicationContext(applicationContext);
+			customize(builder, customizers);
+			return builder;
+		}
+	}
+}
+```
+
+Customizer에 설정값들이 주입되므로, 커스터마이저를 등록하는 빈에 Properties가 달리는 것을 확인할 수 있다.
+
+```java
+@AutoConfiguration
+@ConditionalOnClass(ObjectMapper.class)
+public class JacksonAutoConfiguration {
+
+	@Configuration(proxyBeanMethods = false)
+	@ConditionalOnClass(Jackson2ObjectMapperBuilder.class)
+	@EnableConfigurationProperties(JacksonProperties.class)
+	static class Jackson2ObjectMapperBuilderCustomizerConfiguration {}
+
+}
+
+@ConfigurationProperties(prefix = "spring.jackson")
+public class JacksonProperties {
+
+	private String dateFormat;
+	private String propertyNamingStrategy;
+	private final Map<PropertyAccessor, JsonAutoDetect.Visibility> visibility = new EnumMap<>(PropertyAccessor.class);
+	private final Map<SerializationFeature, Boolean> serialization = new EnumMap<>(SerializationFeature.class);
+	private final Map<DeserializationFeature, Boolean> deserialization = new EnumMap<>(DeserializationFeature.class);
+	// ..
+
+}
+```
+
+`SerializationFeature.WRITE_DATES_AS_TIMESTAMPS` 옵션을 활성화하려면 커스터마이저 구현 클래스를 만들어 빈으로 등록하면 된다.
+
+```java
+@Component // 유저 구성정보
+public class CustomJackson2ObjectMapperBuilderCustomizer implements Jackson2ObjectMapperBuilderCustomizer {
+    @Override
+    public void customize(Jackson2ObjectMapperBuilder builder) {
+        builder.featuresToEnable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+    }
+}
+```
+
+## RestTemplateAutoConfiguration
+
+`RestTemplate`은 HTTP 요청을 수행하기 위한 클라이언트이다. `RestTemplateBuilder`는 불변 객체인 `RestTemplate`을 구성하기 위한 빌더 패턴의 구현체이다.
+
+```java
+@AutoConfiguration(after = HttpMessageConvertersAutoConfiguration.class)
+@ConditionalOnClass(RestTemplate.class)
+@Conditional(NotReactiveWebApplicationCondition.class)
+public class RestTemplateAutoConfiguration {
+
+	@Bean
+	@Lazy
+	@ConditionalOnMissingBean
+	public RestTemplateBuilderConfigurer restTemplateBuilderConfigurer(
+			ObjectProvider<HttpMessageConverters> messageConverters,
+			ObjectProvider<RestTemplateCustomizer> restTemplateCustomizers,
+			ObjectProvider<RestTemplateRequestCustomizer<?>> restTemplateRequestCustomizers) {
+		RestTemplateBuilderConfigurer configurer = new RestTemplateBuilderConfigurer();
+		configurer.setHttpMessageConverters(messageConverters.getIfUnique());
+		configurer.setRestTemplateCustomizers(restTemplateCustomizers.orderedStream().collect(Collectors.toList()));
+		configurer.setRestTemplateRequestCustomizers(
+				restTemplateRequestCustomizers.orderedStream().collect(Collectors.toList()));
+		return configurer;
+	}
+
+	@Bean
+	@Lazy
+	@ConditionalOnMissingBean
+	public RestTemplateBuilder restTemplateBuilder(RestTemplateBuilderConfigurer restTemplateBuilderConfigurer) {
+		RestTemplateBuilder builder = new RestTemplateBuilder();
+		return restTemplateBuilderConfigurer.configure(builder);
+	}
+```
+
+이때 커스텀하게 설정하여 RestTemplate을 구성하려면 RestTemplateBuilderConfigurer을 커스텀하게 만들어 RestTemplateBuilder의 프로퍼티를 수정해서 RestTemplate을 커스텀하게 만들 수 있다.
+
+```java
+// RestTemplate 커스톰 빈 등록
+@Configuration
+public class MyConfiguration {
+    @Bean
+    public RestTemplate restTemplate() {
+        // 커스터마이징된 RestTemplate을 생성합니다.
+        RestTemplate restTemplate = new RestTemplate();
+        // 커스터마이징 작업을 수행합니다.
+        // ...
+        return restTemplate;
+    }
+}
+
+// RestTemplateBuilder 커스톰 빈 등록
+@Configuration
+public class MyConfiguration {
+    @Bean
+    public RestTemplateBuilder restTemplateBuilder() {
+        return new RestTemplateBuilder();
+    }
+}
+```
+
+## Configurer vs Customizer
+
+GPT 왈 :
+
+Customizer는 간단한 구성 변경에 유용하며, Configurer는 더 복잡한 구성 변경에 유용합니다. 또한, Configurer는 Customizer보다 높은 우선순위를 가지므로 Configurer가 먼저 적용되고 그 다음에 Customizer가 적용됩니다.
+
+Customizer는 builder의 일부 구성 요소를 변경하는 단순한 방법을 제공합니다. 예를 들어, Customizer를 사용하여 Interceptor, MessageConverter, ErrorHandler 등을 추가하거나 제거할 수 있습니다. Customizer는 빌더에 대한 단순한 변경을 수행하므로 일반적으로 빠르게 적용할 수 있습니다.
+
+Configurer는 builder의 전체 구성을 변경하는 더욱 강력한 방법입니다. 예를 들어, Configurer를 사용하여 빌더의 연결 시간 초과 또는 기본 요청 헤더와 같은 속성을 구성할 수 있습니다. Configurer는 빌더에 대한 복잡한 구성 변경을 수행하므로 Customizer보다 시간이 더 걸릴 수 있습니다.
+
+## EmbeddedWebServerFactoryCustomizerAutoConfiguration
+
+`EmbeddedWebServerFactoryCustomizer`는 Spring Boot에서 내장 웹 서버(factory)의 구성을 수정하는 데 사용되는 `WebServerFactoryCustomizer`의 구현체이다. 톰캣, 제티, 언더토우로 등록되는 웹서버를 선택하여 구성이 가능하다.
+
+```java
+@AutoConfiguration
+@ConditionalOnNotWarDeployment
+@ConditionalOnWebApplication
+@EnableConfigurationProperties(ServerProperties.class)
+public class EmbeddedWebServerFactoryCustomizerAutoConfiguration {
+
+	@Configuration(proxyBeanMethods = false)
+	@ConditionalOnClass({ Tomcat.class, UpgradeProtocol.class })
+	public static class TomcatWebServerFactoryCustomizerConfiguration {
+
+		@Bean
+		public TomcatWebServerFactoryCustomizer tomcatWebServerFactoryCustomizer(Environment environment,
+				ServerProperties serverProperties) {
+			return new TomcatWebServerFactoryCustomizer(environment, serverProperties);
+		}
+
+	}
+}
+```
+
+커스텀하게 설정할 수 있는 값은 ServerProperties에서 확인할 수 있다.
+
+```java
+@ConfigurationProperties(prefix = "server", ignoreUnknownFields = true)
+public class ServerProperties {
+
+	private Integer port;
+	private InetAddress address;
+
+	@NestedConfigurationProperty
+	private final ErrorProperties error = new ErrorProperties();
+
+	private ForwardHeadersStrategy forwardHeadersStrategy;
+	private String serverHeader;
+	private DataSize maxHttpHeaderSize = DataSize.ofKilobytes(8);
+	private Shutdown shutdown = Shutdown.IMMEDIATE;
+
+	@NestedConfigurationProperty
+	private Ssl ssl;
+
+	@NestedConfigurationProperty
+	private final Compression compression = new Compression();
+
+	@NestedConfigurationProperty
+	private final Http2 http2 = new Http2();
+
+	private final Servlet servlet = new Servlet();
+
+	private final Reactive reactive = new Reactive();
+
+	private final Tomcat tomcat = new Tomcat();
+
+	private final Jetty jetty = new Jetty();
+
+	private final Netty netty = new Netty();
+
+	private final Undertow undertow = new Undertow();
+
+}
+```
+
+## ServletWebServerFactoryAutoConfiguration
+
+`ServletWebServerFactoryAutoConfiguration`은 ****내장형 서블릿 컨테이너를 구성하는 데 필요한 빈들을 자동으로 구성한다.
+
+```java
+@AutoConfiguration
+@AutoConfigureOrder(Ordered.HIGHEST_PRECEDENCE)
+@ConditionalOnClass(ServletRequest.class)
+@ConditionalOnWebApplication(type = Type.SERVLET)
+@EnableConfigurationProperties(ServerProperties.class)
+@Import({ ServletWebServerFactoryAutoConfiguration.BeanPostProcessorsRegistrar.class,
+		ServletWebServerFactoryConfiguration.EmbeddedTomcat.class,
+		ServletWebServerFactoryConfiguration.EmbeddedJetty.class,
+		ServletWebServerFactoryConfiguration.EmbeddedUndertow.class })
+public class ServletWebServerFactoryAutoConfiguration {
+
+	@Bean
+	public ServletWebServerFactoryCustomizer servletWebServerFactoryCustomizer(ServerProperties serverProperties,
+			ObjectProvider<WebListenerRegistrar> webListenerRegistrars,
+			ObjectProvider<CookieSameSiteSupplier> cookieSameSiteSuppliers) {
+		return new ServletWebServerFactoryCustomizer(serverProperties,
+				webListenerRegistrars.orderedStream().collect(Collectors.toList()),
+				cookieSameSiteSuppliers.orderedStream().collect(Collectors.toList()));
+	}
+
+	@Bean
+	@ConditionalOnClass(name = "org.apache.catalina.startup.Tomcat")
+	public TomcatServletWebServerFactoryCustomizer tomcatServletWebServerFactoryCustomizer(
+			ServerProperties serverProperties) {
+		return new TomcatServletWebServerFactoryCustomizer(serverProperties);
+	}
+
+}
+```
+
+`ServletWebServerFactoryCustomizer`은 내장형 서블릿 컨테이너를 구성하는 데 필요한 빈들을 자동으로 구성한다. `ServerProperties`, `List<WebListenerRegistrar>`, `List<CookieSameSiteSupplier>` 을 필드로 가지며 해당 필드 값을 받아서 서블릿 컨테이너에 주입한다.
+
+```java
+public class ServletWebServerFactoryCustomizer
+		implements WebServerFactoryCustomizer<ConfigurableServletWebServerFactory>, Ordered {
+
+	private final ServerProperties serverProperties;
+	private final List<WebListenerRegistrar> webListenerRegistrars;
+	private final List<CookieSameSiteSupplier> cookieSameSiteSuppliers;
+
+	// 생성자, 게터
+
+	@Override
+	public void customize(ConfigurableServletWebServerFactory factory) {
+		PropertyMapper map = PropertyMapper.get().alwaysApplyingWhenNonNull();
+		map.from(this.serverProperties::getPort).to(factory::setPort);
+		map.from(this.serverProperties::getAddress).to(factory::setAddress);
+		map.from(this.serverProperties.getServlet()::getContextPath).to(factory::setContextPath);
+		map.from(this.serverProperties.getServlet()::getApplicationDisplayName).to(factory::setDisplayName);
+		map.from(this.serverProperties.getServlet()::isRegisterDefaultServlet).to(factory::setRegisterDefaultServlet);
+		map.from(this.serverProperties.getServlet()::getSession).to(factory::setSession);
+		map.from(this.serverProperties::getSsl).to(factory::setSsl);
+		map.from(this.serverProperties.getServlet()::getJsp).to(factory::setJsp);
+		map.from(this.serverProperties::getCompression).to(factory::setCompression);
+		map.from(this.serverProperties::getHttp2).to(factory::setHttp2);
+		map.from(this.serverProperties::getServerHeader).to(factory::setServerHeader);
+		map.from(this.serverProperties.getServlet()::getContextParameters).to(factory::setInitParameters);
+		map.from(this.serverProperties.getShutdown()).to(factory::setShutdown);
+		for (WebListenerRegistrar registrar : this.webListenerRegistrars) {
+			registrar.register(factory);
+		}
+		if (!CollectionUtils.isEmpty(this.cookieSameSiteSuppliers)) {
+			factory.setCookieSameSiteSuppliers(this.cookieSameSiteSuppliers);
+		}
+	}
+
+}
+```
+
+
