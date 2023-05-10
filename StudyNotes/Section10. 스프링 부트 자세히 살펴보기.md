@@ -668,4 +668,395 @@ public class ServletWebServerFactoryCustomizer
 }
 ```
 
+## DispatcherServletAutoConfiguration
+
+DispatcherServlet에 대한 기본 구성을 제공한다. Spring MVC 프레임워크에서 DispatcherServlet은 프론트 컨트롤러로써 클라이언트의 HTTP 요청을 처리하고 적절한 핸들러(컨트롤러)를 선택하고, 뷰를 렌더링하여 HTTP 응답을 생성하는 중심적인 역할을 담당한다.
+
+컨피그 클래스를 살펴보면 DispatcherServlet, MultipartResolver, DispatcherServletRegistrationBean을 등록하고 있다. 클래스 조건을 보면 환경이 Web인 경우에 등록되는 것을 알 수 있다.
+
+```java
+@AutoConfigureOrder(Ordered.HIGHEST_PRECEDENCE)
+@AutoConfiguration(after = ServletWebServerFactoryAutoConfiguration.class)
+@ConditionalOnWebApplication(type = Type.SERVLET)
+@ConditionalOnClass(DispatcherServlet.class)
+public class DispatcherServletAutoConfiguration {
+
+	public static final String DEFAULT_DISPATCHER_SERVLET_REGISTRATION_BEAN_NAME = "dispatcherServletRegistration";
+
+	@Configuration(proxyBeanMethods = false)
+	@Conditional(DefaultDispatcherServletCondition.class)
+	@ConditionalOnClass(ServletRegistration.class)
+	@EnableConfigurationProperties(WebMvcProperties.class)
+	protected static class DispatcherServletConfiguration {
+
+		@Bean(name = DEFAULT_DISPATCHER_SERVLET_BEAN_NAME)
+		public DispatcherServlet dispatcherServlet(WebMvcProperties webMvcProperties) {
+			DispatcherServlet dispatcherServlet = new DispatcherServlet();
+			dispatcherServlet.setDispatchOptionsRequest(webMvcProperties.isDispatchOptionsRequest());
+			dispatcherServlet.setDispatchTraceRequest(webMvcProperties.isDispatchTraceRequest());
+			dispatcherServlet.setThrowExceptionIfNoHandlerFound(webMvcProperties.isThrowExceptionIfNoHandlerFound());
+			dispatcherServlet.setPublishEvents(webMvcProperties.isPublishRequestHandledEvents());
+			dispatcherServlet.setEnableLoggingRequestDetails(webMvcProperties.isLogRequestDetails());
+			return dispatcherServlet;
+		}
+
+		@Bean
+		@ConditionalOnBean(MultipartResolver.class)
+		@ConditionalOnMissingBean(name = DispatcherServlet.MULTIPART_RESOLVER_BEAN_NAME)
+		public MultipartResolver multipartResolver(MultipartResolver resolver) {
+			// Detect if the user has created a MultipartResolver but named it incorrectly
+			return resolver;
+		}
+
+	}
+
+	@Configuration(proxyBeanMethods = false)
+	@Conditional(DispatcherServletRegistrationCondition.class)
+	@ConditionalOnClass(ServletRegistration.class)
+	@EnableConfigurationProperties(WebMvcProperties.class)
+	@Import(DispatcherServletConfiguration.class)
+	protected static class DispatcherServletRegistrationConfiguration {
+
+		@Bean(name = DEFAULT_DISPATCHER_SERVLET_REGISTRATION_BEAN_NAME)
+		@ConditionalOnBean(value = DispatcherServlet.class, name = DEFAULT_DISPATCHER_SERVLET_BEAN_NAME)
+		public DispatcherServletRegistrationBean dispatcherServletRegistration(DispatcherServlet dispatcherServlet,
+				WebMvcProperties webMvcProperties, ObjectProvider<MultipartConfigElement> multipartConfig) {
+			DispatcherServletRegistrationBean registration = new DispatcherServletRegistrationBean(dispatcherServlet,
+					webMvcProperties.getServlet().getPath());
+			registration.setName(DEFAULT_DISPATCHER_SERVLET_BEAN_NAME);
+			registration.setLoadOnStartup(webMvcProperties.getServlet().getLoadOnStartup());
+			multipartConfig.ifAvailable(registration::setMultipartConfig);
+			return registration;
+		}
+
+	}
+```
+
+[Dispatcher](https://docs.spring.io/spring-framework/docs/current/javadoc-api/org/springframework/web/servlet/DispatcherServlet.html) 클래스 안에 멤버를 보면 HandlerMapping, HandlerAdapter, ViewResolver, ArgumentResolver 등 웹 mvc 동작에 필요한 여러 필드를 가지고 있다. 프론트 컨트롤러이므로 요청을 어느 컨트롤러로 전달할 것인지, 컨트롤러로부터 받은 처리 결과를 어떻게 응답으로 만들 것인지 결정한다.
+
+- HandlerMapping: 클라이언트의 요청 URL에 대한 처리를 담당하는 객체로, 요청을 처리할 컨트롤러(Controller) 객체를 찾아주는 역할을 한다.
+- HandlerAdapter: HandlerMapping에서 찾아낸 컨트롤러 객체를 실행하고, 그 결과를 DispatcherServlet으로 반환하는 역할을 한다. 각 컨트롤러 객체마다 처리 방식이 다르기 때문에 컨트롤러 객체의 처리 방식에 따라 적절한 HandlerAdapter를 사용한다.
+- ViewResolver: 컨트롤러에서 처리한 결과를 어떤 View로 보여줄지 결정하는 역할을 한다. ViewResolver는 컨트롤러에서 반환한 뷰 이름(ViewName)을 이용해 해당 View 객체를 찾아내고, 그 View 객체를 DispatcherServlet으로 반환한다.
+- ArgumentResolver: 클라이언트 요청(request)에서 파라미터를 추출하고, 그 값을 컨트롤러에서 처리하기 쉬운 형태로 변환해주는 역할을 한다. 각 컨트롤러 메서드의 매개변수의 타입과 매개변수 이름을 비교해, 필요한 매개변수의 값을 파라미터로부터 추출하여 해당 컨트롤러 메서드를 호출한다.
+
+Dispatcher을 초기화하는데 사용하는 Properties 클래스를 살펴보면 다음과 같다.
+
+application.properties 파일에서 `spring.mvc` 프로퍼티를 사용해 설정할 수 있다. 예를 들어 DispatcherServlet 의 매핑 경로를 "/api" 로 변경하려면 다음과 같이 설정한다 : `spring.mvc.servlet.path=/api`
+
+```java
+@ConfigurationProperties(prefix = "spring.mvc")
+public class WebMvcProperties {
+	private DefaultMessageCodesResolver.Format messageCodesResolverFormat;
+	private final Format format = new Format();
+	private boolean dispatchTraceRequest = false;
+	private boolean dispatchOptionsRequest = true;
+	private boolean ignoreDefaultModelOnRedirect = true;
+	private boolean publishRequestHandledEvents = true;
+	private boolean throwExceptionIfNoHandlerFound = false;
+	private boolean logRequestDetails;
+	private boolean logResolvedException = false;
+	private String staticPathPattern = "/**";
+	private final Async async = new Async();
+	private final Servlet servlet = new Servlet();
+	private final View view = new View();
+	private final Contentnegotiation contentnegotiation = new Contentnegotiation();
+	private final Pathmatch pathmatch = new Pathmatch();
+	public DefaultMessageCodesResolver.Format getMessageCodesResolverFormat() {
+		return this.messageCodesResolverFormat;
+	}
+
+	// ..
+}
+```
+
+## HttpEncodingAutoConfiguration
+
+HttpEncodingAutoConfiguration은 요청과 응답에서 사용하는 캐릭터 인코딩을 지원하기 위한 설정을 담당한다.
+
+필드에 있는 Encoding은 ServerProperties로부터 일부 필드를 받아 주입받는다. 그리고 CharacterEncodingFilter와 LocaleCharsetMappingsCustomizer를 등록할 때 Property를 사용한다. 필터는 요청과 응답의 문자열 인코딩을 받아서 강제로 지정하고, 커스터마이저는 애플리케이션의 문자 인코딩 매핑을 변경하는 데 사용된다. 예를 들어, 기본적으로 Spring Boot는 ISO-8859-1 문자 집합을 ISO-8859-1 로케일(locale)로 매핑한다.
+
+```java
+@AutoConfiguration
+@EnableConfigurationProperties(ServerProperties.class)
+@ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
+@ConditionalOnClass(CharacterEncodingFilter.class)
+@ConditionalOnProperty(prefix = "server.servlet.encoding", value = "enabled", matchIfMissing = true)
+public class HttpEncodingAutoConfiguration {
+
+	private final Encoding properties;
+
+	public HttpEncodingAutoConfiguration(ServerProperties properties) {
+		this.properties = properties.getServlet().getEncoding();
+	}
+
+	@Bean
+	@ConditionalOnMissingBean
+	public CharacterEncodingFilter characterEncodingFilter() {
+		CharacterEncodingFilter filter = new OrderedCharacterEncodingFilter();
+		filter.setEncoding(this.properties.getCharset().name());
+		filter.setForceRequestEncoding(this.properties.shouldForce(Encoding.Type.REQUEST));
+		filter.setForceResponseEncoding(this.properties.shouldForce(Encoding.Type.RESPONSE));
+		return filter;
+	}
+
+	@Bean
+	public LocaleCharsetMappingsCustomizer localeCharsetMappingsCustomizer() {
+		return new LocaleCharsetMappingsCustomizer(this.properties);
+	}
+```
+
+인코딩을 바꾸려면 다음과 같이 설정값을 준다. 스프링부트는 기본적으로 CharacterEncodingFilter를 등록할 때 이 외부 설정값을 반영해서 등록하기 때문이다.
+
+```java
+spring.http.encoding.charset=UTF-8
+spring.http.encoding.force=true
+```
+
+## MultipartAutoConfiguration
+
+멀티파트 요청은 파일 업로드에 사용된다. MultipartConfigElement와 StandardServletMultipartResolver이 빈으로 등록되며, MultipartProperties를 프로퍼티로 사용한다.
+
+```java
+@ConditionalOnClass({ Servlet.class, StandardServletMultipartResolver.class, MultipartConfigElement.class })
+@ConditionalOnProperty(prefix = "spring.servlet.multipart", name = "enabled", matchIfMissing = true)
+@ConditionalOnWebApplication(type = Type.SERVLET)
+@EnableConfigurationProperties(MultipartProperties.class)
+public class MultipartAutoConfiguration {
+
+	private final MultipartProperties multipartProperties;
+
+	public MultipartAutoConfiguration(MultipartProperties multipartProperties) {
+		this.multipartProperties = multipartProperties;
+	}
+
+	@Bean
+	@ConditionalOnMissingBean({ MultipartConfigElement.class, CommonsMultipartResolver.class })
+	public MultipartConfigElement multipartConfigElement() {
+		return this.multipartProperties.createMultipartConfig();
+	}
+
+	@Bean(name = DispatcherServlet.MULTIPART_RESOLVER_BEAN_NAME)
+	@ConditionalOnMissingBean(MultipartResolver.class)
+	public StandardServletMultipartResolver multipartResolver() {
+		StandardServletMultipartResolver multipartResolver = new StandardServletMultipartResolver();
+		multipartResolver.setResolveLazily(this.multipartProperties.isResolveLazily());
+		return multipartResolver;
+	}
+
+}
+```
+
+MultipartConfigElement는 `multipart/form-data` 형식의 HTTP 요청 데이터를 해석하고 처리하는 방법을 구성한다. 주요 구성 요소로는 임시 저장소 위치, 최대 파일 크기, 최대 요청 크기, 메모리에 저장할 파일 크기를 세팅한다.
+
+```java
+public class MultipartConfigElement {
+    private final String location;// = "";
+    private final long maxFileSize;// = -1;
+    private final long maxRequestSize;// = -1;
+    private final int fileSizeThreshold;// = 0;
+		// ..
+}
+```
+
+StandardServletMultipartResolver는 멀티파트 요청 데이터를 해석하고 처리한다. multipart/form-data 요청이 들어오면 해당 요청을 Part 객체들로 해석하고, 각 Part를 처리할 MultipartFile 객체를 생성한다. resolveLazily는 멀티파트 요청이 발생하기 전까지는 멀티파트 요청을 처리하기 위한 메모리나 디스크 공간을 할당을 미루는 설정이다.
+
+```java
+public class StandardServletMultipartResolver implements MultipartResolver {
+	private boolean resolveLazily = false;
+	private boolean strictServletCompliance = false;
+	// ..
+}
+```
+
+사용자가 커스텀하게 설정할 수 있는 Properties를 살펴보자. application.properties 파일에서 `spring.servlet.multipart` 프로퍼티를 사용해 설정할 수 있다.
+
+```java
+@ConfigurationProperties(prefix = "spring.servlet.multipart", ignoreUnknownFields = false)
+public class MultipartProperties {
+
+	/**
+	 * Whether to enable support of multipart uploads.
+	 */
+	private boolean enabled = true;
+
+	/**
+	 * Intermediate location of uploaded files.
+	 */
+	private String location;
+
+	/**
+	 * Max file size.
+	 */
+	private DataSize maxFileSize = DataSize.ofMegabytes(1);
+
+	/**
+	 * Max request size.
+	 */
+	private DataSize maxRequestSize = DataSize.ofMegabytes(10);
+
+	/**
+	 * Threshold after which files are written to disk.
+	 */
+	private DataSize fileSizeThreshold = DataSize.ofBytes(0);
+
+	/**
+	 * Whether to resolve the multipart request lazily at the time of file or parameter
+	 * access.
+	 */
+	private boolean resolveLazily = false;
+```
+
+## WebMvcAutoConfiguration
+
+Spring MVC를 사용하여 웹 애플리케이션을 개발하는 데 필요한 다양한 기본 설정을 제공한다. 다음과 같은 빈을 등록한다.
+
+1. `DispatcherServlet` : Spring MVC에서 HTTP 요청을 처리하는 주요 구성 요소. 일반적으로 웹 애플리케이션의 root context에 해당하는 ApplicationContext에 등록된다.
+2. `HandlerMapping` : HTTP 요청을 처리하는 컨트롤러 클래스를 찾기 위해 요청과 관련된 URL 패턴을 매핑하는 `HandlerMapping` 빈을 자동으로 등록
+3. `HandlerAdapter` : `HandlerMapping`에서 찾은 컨트롤러 클래스를 실행
+4. `ViewResolver` : 컨트롤러에서 반환한 뷰 이름을 통해 실제 뷰 오브젝트를 생성
+5. `HttpMessageConverter` : 컨트롤러에서 반환한 객체를 HTTP 응답으로 변환
+6. `ResourceHttpRequestHandler` : HTTP 요청에 대한 정적 자원을 처리하는 데 사용
+7. `RequestMappingHandlerMapping` : `@RequestMapping` 어노테이션을 사용하여 HTTP 요청을 처리하는 핸들러 메소드를 찾기
+8. `RequestMappingHandlerAdapter` : RequestMappingHandlerMapping에서 찾은 핸들러 메소드를 실행
+9. `ExceptionHandlerExceptionResolver` : 애플리케이션에서 발생하는 예외를 처리
+
+이 컨피그 클래스에서는 `WebMvcProperties.class`, `WebProperties.class`을 사용하여 외부 설정값을 등록한다.
+
+- Locale : 지역 설정 담당
+- Format: Formatter 및 Converter를 커스터마이징
+- staticPathPattern: 정적 자원에 대한 요청을 처리하기 위한 패턴을 지정
+- Async: Spring MVC의 비동기 처리를 구성
+- Servlet: Spring MVC의 DispatcherServlet 구성
+- View: Spring MVC의 ViewResolver 구성
+- Contentnegotiation: HTTP 콘텐츠 협상(Content Negotiation) 구성
+- Pathmatch: URL 경로 매칭(Path Matching)을 구성
+
+application.properties에 spring.web이나 spring.mvc로 시작하는 설정값을 넣으면 된다. WebMvcProperties의 Format을 application.properties로 커스텀 설정하려면 다음과 같이 지정한다.
+
+```java
+spring.mvc.format.date-time=yyyy-MM-dd HH:mm:ss
+```
+
+```java
+@ConfigurationProperties("spring.web")
+public class WebProperties {
+
+	/**
+	 * Locale to use. By default, this locale is overridden by the "Accept-Language"
+	 * header.
+	 */
+	private Locale locale;
+
+	/**
+	 * Define how the locale should be resolved.
+	 */
+	private LocaleResolver localeResolver = LocaleResolver.ACCEPT_HEADER;
+
+	private final Resources resources = new Resources();
+
+}
+
+@ConfigurationProperties(prefix = "spring.mvc")
+public class WebMvcProperties {
+
+	/**
+	 * Formatting strategy for message codes. For instance, 'PREFIX_ERROR_CODE'.
+	 */
+	private DefaultMessageCodesResolver.Format messageCodesResolverFormat;
+
+	private final Format format = new Format();
+
+	/**
+	 * Whether to dispatch TRACE requests to the FrameworkServlet doService method.
+	 */
+	private boolean dispatchTraceRequest = false;
+
+	/**
+	 * Whether to dispatch OPTIONS requests to the FrameworkServlet doService method.
+	 */
+	private boolean dispatchOptionsRequest = true;
+
+	/**
+	 * Whether the content of the "default" model should be ignored during redirect
+	 * scenarios.
+	 */
+	private boolean ignoreDefaultModelOnRedirect = true;
+
+	/**
+	 * Whether to publish a ServletRequestHandledEvent at the end of each request.
+	 */
+	private boolean publishRequestHandledEvents = true;
+
+	/**
+	 * Whether a "NoHandlerFoundException" should be thrown if no Handler was found to
+	 * process a request.
+	 */
+	private boolean throwExceptionIfNoHandlerFound = false;
+
+	/**
+	 * Whether logging of (potentially sensitive) request details at DEBUG and TRACE level
+	 * is allowed.
+	 */
+	private boolean logRequestDetails;
+
+	/**
+	 * Whether to enable warn logging of exceptions resolved by a
+	 * "HandlerExceptionResolver", except for "DefaultHandlerExceptionResolver".
+	 */
+	private boolean logResolvedException = false;
+
+	/**
+	 * Path pattern used for static resources.
+	 */
+	private String staticPathPattern = "/**";
+
+	private final Async async = new Async();
+
+	private final Servlet servlet = new Servlet();
+
+	private final View view = new View();
+
+	private final Contentnegotiation contentnegotiation = new Contentnegotiation();
+
+	private final Pathmatch pathmatch = new Pathmatch();
+```
+
+## WebMvcConfigurationSupport 중 HandlerExceptionResolver
+
+WebMvcAutoConfiguration을 살펴보던 중 클래스 레벨에 `@ConditionalOnMissingBean(WebMvcConfigurationSupport.class)` 이 붙어있는 것을 확인했다. 보통 클래스 레벨에는 ConditionalOnMissingBean을 사용하는게  관례는 아니라고 했는데, `WebMvcConfigurationSupport`가 뭔데 조건으로 걸어놨나 궁금해서 열어봤다.
+
+열어보니 천줄이 넘더라..ㅎㅎ 일단 제일 눈에 띄었던 HandlerExceptionResolver 등록 코드를 살펴봤다. HandlerExceptionResolver는 애플리케이션에서 발생한 런타임 예외를 처리하는 방법을 제공한다. HandlerExceptionResolver의 종류로 SimpleMapping, Default, ResponseStatus, Exception이 있는데, WebMvcConfigurationSupport에서는 `ExceptionHandlerExceptionResolver`을 등록한다. `@ExceptionHandler` 어노테이션이 붙은 메서드를 찾아서 예외를 처리하는 역할이다.
+
+```java
+public class WebMvcConfigurationSupport implements ApplicationContextAware, ServletContextAware {
+	@Bean
+	public HandlerExceptionResolver handlerExceptionResolver(
+			@Qualifier("mvcContentNegotiationManager") ContentNegotiationManager contentNegotiationManager) {
+		List<HandlerExceptionResolver> exceptionResolvers = new ArrayList<>();
+		configureHandlerExceptionResolvers(exceptionResolvers);
+		if (exceptionResolvers.isEmpty()) {
+			addDefaultHandlerExceptionResolvers(exceptionResolvers, contentNegotiationManager);
+		}
+		extendHandlerExceptionResolvers(exceptionResolvers);
+		HandlerExceptionResolverComposite composite = new HandlerExceptionResolverComposite();
+		composite.setOrder(0);
+		composite.setExceptionResolvers(exceptionResolvers);
+		return composite;
+	}
+}
+```
+
+`@ExceptionHandler`은 스프링부트로 웹 api를 만들어봤다면 익숙한 애노테이션이다. 이 애노테이션을 붙인 메소드는 예외 핸들러 메소드가 된다. 예외 핸들러 메소드를 사용해 특정 런타임 예외가 발생하면 미리 선언해둔 리턴 객체 타입을 구성해서 응답으로 반환할 수 있다.
+
+```java
+@ExceptionHandler(MyException.class)
+public ResponseEntity<ErrorResponse> handleMyException(MyException ex) {
+    ErrorResponse response = new ErrorResponse("ERROR", ex.getMessage());
+    return new ResponseEntity<>(response, HttpStatus.BAD_REQUEST);
+}
+```
+
+그나저나 Configuration에 왜 Support란 이름이 붙은걸까? 공식문서에 안 나오길래 gpt에게 물어봤다. <<WebMvcConfigurationSupport 클래스는 스프링 내부에서 사용되는 기반 클래스로, 개발자가 이를 상속받아 웹 MVC 구성을 보다 쉽게 할 수 있도록 도와주는 역할을 합니다. 따라서 이 클래스의 이름에 Support가 붙어있는 것은 이 클래스가 단독으로 사용되기보다는 **개발자가 이를 상속받아 사용하는 것이 일반적**이기 때문입니다. Support는 이러한 역할을 지원한다는 의미로 붙은 접미사입니다.>> 라고 한다.
+
+확실히 알 수 있는 것은 이 클래스가 사용자의 커스텀 구성을 허용한다는 것이고, @ConditionalOnMissingBean 설정 때문에 WebMvcConfigurationSupport 커스톰 빈이 더 우선순위가 높다는 점이다.
 
