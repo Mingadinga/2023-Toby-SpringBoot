@@ -1060,3 +1060,270 @@ public ResponseEntity<ErrorResponse> handleMyException(MyException ex) {
 
 확실히 알 수 있는 것은 이 클래스가 사용자의 커스텀 구성을 허용한다는 것이고, @ConditionalOnMissingBean 설정 때문에 WebMvcConfigurationSupport 커스톰 빈이 더 우선순위가 높다는 점이다.
 
+# **Jdbc 자동 구성 살펴보기**
+
+gradle에 의존성을 추가한다.
+
+```
+implementation 'org.springframework.boot:spring-boot-starter-jdbc'
+```
+
+다음과 같이 임포트된 모듈을 확인한다. 히카리 데이터소스, jdbc 관련 라이브러리가 들어왔다.
+
+![스크린샷 2023-05-11 오전 8.45.14.png](https://s3-us-west-2.amazonaws.com/secure.notion-static.com/023e0346-b070-4596-a78f-6902e890beaa/%E1%84%89%E1%85%B3%E1%84%8F%E1%85%B3%E1%84%85%E1%85%B5%E1%86%AB%E1%84%89%E1%85%A3%E1%86%BA_2023-05-11_%E1%84%8B%E1%85%A9%E1%84%8C%E1%85%A5%E1%86%AB_8.45.14.png)
+
+main에 있는 `ConditionEvaluationReport` 코드를 돌려보면 다음과 같이 오류가 난다. 시작을 못했다.
+
+![스크린샷 2023-05-11 오전 8.52.18.png](https://s3-us-west-2.amazonaws.com/secure.notion-static.com/208fa67f-cffa-4235-847c-62e880048666/%E1%84%89%E1%85%B3%E1%84%8F%E1%85%B3%E1%84%85%E1%85%B5%E1%86%AB%E1%84%89%E1%85%A3%E1%86%BA_2023-05-11_%E1%84%8B%E1%85%A9%E1%84%8C%E1%85%A5%E1%86%AB_8.52.18.png)
+
+Datasource Url 값이 지정되지 않았고, 기본값을 주입하지 못한다는 뜻이다. 원인은 기본값을 주입해줄 적절한 드라이버 클래스를 찾지 못해서 그런 것이니, 드라이버 클래스를 추가해야 한다. 스프링부트가 기본적으로 제공하는 데이터베이스를 쓰거나, db를 별도로 생성하고 profile에 필요한 값을 넣으면 된다. 여기서는 hsqldb를 사용한다.
+
+build.gradle에 `implementation 'org.hsqldb:hsqldb:2.7.1'` 를 추가하고 빌드를 다시하면 라이브러리가 추가되고, main 코드가 잘 동작한다. 로그에 찍힌 빈들 중 중요한 것들을 살펴보자.
+
+## PersistenceExceptionTranslationAutoConfiguration
+
+PersistenceExceptionTranslation은 JPA, Hibernate, JDO 등과 같은 ORM 프레임워크에서 발생하는 개별적인 예외를 스프링의 DataAccessException 계층 구조에 맞게 변환한다.
+
+이 컨피그에서 등록하는 `PersistenceExceptionTranslationPostProcessor`이 예외 추상화를 담당하는 빈 후처리기이다. matchIfMissing = true 옵션에 의해 컨테이너에 등록되지 않았다면 이 빈으로 등록한다.
+
+```java
+@AutoConfiguration
+@ConditionalOnClass(PersistenceExceptionTranslationPostProcessor.class)
+public class PersistenceExceptionTranslationAutoConfiguration {
+
+	@Bean
+	@ConditionalOnMissingBean
+	@ConditionalOnProperty(prefix = "spring.dao.exceptiontranslation", name = "enabled", matchIfMissing = true)
+	public static PersistenceExceptionTranslationPostProcessor persistenceExceptionTranslationPostProcessor(
+			Environment environment) {
+		PersistenceExceptionTranslationPostProcessor postProcessor = new PersistenceExceptionTranslationPostProcessor();
+		boolean proxyTargetClass = environment.getProperty("spring.aop.proxy-target-class", Boolean.class,
+				Boolean.TRUE);
+		postProcessor.setProxyTargetClass(proxyTargetClass);
+		return postProcessor;
+	}
+
+}
+```
+
+## DataSourceAutoConfiguration
+
+DataSource는 다음과 같은 역할을 한다.
+
+- Connection Pool을 관리
+- Connection 객체를 생성하여 애플리케이션에게 제공
+- 애플리케이션의 데이터베이스 접근 설정 정보 포함
+
+`DataSourceConfiguration`에서는 톰캣, 히카리, Dbcp2, OracleUcp 등의 데이터소스를 등록할 수 있다. 스프링 jdbc 모듈은 Hikari 라이브러리를 기본적으로 포함하므로 @ConditionalOnClass에 의해 등록된다.
+
+```java
+abstract class DataSourceConfiguration {
+
+	@Configuration(proxyBeanMethods = false)
+	@ConditionalOnClass(HikariDataSource.class)
+	@ConditionalOnMissingBean(DataSource.class)
+	@ConditionalOnProperty(name = "spring.datasource.type", havingValue = "com.zaxxer.hikari.HikariDataSource",
+			matchIfMissing = true)
+	static class Hikari {
+
+		@Bean
+		@ConfigurationProperties(prefix = "spring.datasource.hikari")
+		HikariDataSource dataSource(DataSourceProperties properties) {
+			HikariDataSource dataSource = createDataSource(properties, HikariDataSource.class);
+			if (StringUtils.hasText(properties.getName())) {
+				dataSource.setPoolName(properties.getName());
+			}
+			return dataSource;
+		}
+
+	}
+}
+```
+
+`DataSourceAutoConfiguration`에서는 EmbeddedDatabaseConfiguration와 PooledDataSourceConfiguration 설정을 포함한다. 클래스 레벨의 조건에서 `EmbeddedDatabaseType`을 포함하는데, 스프링부트가 기본적으로 제공하는 내장 서버 타입의 열거형이다. HSQL, H2, DERBY가 있다.
+
+```java
+@AutoConfiguration(before = SqlInitializationAutoConfiguration.class)
+@ConditionalOnClass({ DataSource.class, EmbeddedDatabaseType.class })
+@ConditionalOnMissingBean(type = "io.r2dbc.spi.ConnectionFactory")
+@EnableConfigurationProperties(DataSourceProperties.class)
+@Import(DataSourcePoolMetadataProvidersConfiguration.class)
+public class DataSourceAutoConfiguration {
+
+	@Configuration(proxyBeanMethods = false)
+	@Conditional(EmbeddedDatabaseCondition.class)
+	@ConditionalOnMissingBean({ DataSource.class, XADataSource.class })
+	@Import(EmbeddedDataSourceConfiguration.class)
+	protected static class EmbeddedDatabaseConfiguration {
+
+	}
+
+	@Configuration(proxyBeanMethods = false)
+	@Conditional(PooledDataSourceCondition.class)
+	@ConditionalOnMissingBean({ DataSource.class, XADataSource.class })
+	@Import({ DataSourceConfiguration.Hikari.class, DataSourceConfiguration.Tomcat.class,
+			DataSourceConfiguration.Dbcp2.class, DataSourceConfiguration.OracleUcp.class,
+			DataSourceConfiguration.Generic.class, DataSourceJmxConfiguration.class })
+	protected static class PooledDataSourceConfiguration {
+
+	}
+```
+
+EmbeddedDataSourceConfiguration에서는 `EmbeddedDatabase` 빈을 등록한다. 여기서 사용되는 DataSourceProperties을 살펴보면 클래스로더, 이름, 타입, url, 유저이름과 비밀번호 등의 정보를 주입할 수 있다.
+
+```java
+@Configuration(proxyBeanMethods = false)
+@EnableConfigurationProperties(DataSourceProperties.class)
+public class EmbeddedDataSourceConfiguration implements BeanClassLoaderAware {
+
+	private ClassLoader classLoader;
+
+	@Override
+	public void setBeanClassLoader(ClassLoader classLoader) {
+		this.classLoader = classLoader;
+	}
+
+	@Bean(destroyMethod = "shutdown")
+	public EmbeddedDatabase dataSource(DataSourceProperties properties) {
+		return new EmbeddedDatabaseBuilder().setType(EmbeddedDatabaseConnection.get(this.classLoader).getType())
+			.setName(properties.determineDatabaseName())
+			.build();
+	}
+
+}
+
+@ConfigurationProperties(prefix = "spring.datasource")
+public class DataSourceProperties implements BeanClassLoaderAware, InitializingBean {
+
+	private ClassLoader classLoader;
+	private boolean generateUniqueName = true;
+	private String name;
+	private Class<? extends DataSource> type;
+	private String driverClassName;
+	private String url;
+	private String username;
+	private String password;
+	// ..
+}
+```
+
+애플리케이션에 등록하는 데이터베이스는 스프링부트가 제공하는 내장서버 외에도 외부에서 생성한 db를 연결하기도 한다. 이때는 보통 다음과 같이 [application.properties](http://application.properties) 등에서 db 설정 정보를 추가한다.
+
+```java
+spring.datasource.url=jdbc:mariadb://localhost:3306/db_name
+spring.datasource.driver-class-name=org.mariadb.jdbc.Driver
+spring.datasource.username=user_name
+spring.datasource.password=user_password
+```
+
+DataSourceProperties 안의 `determineDriverClassName`을 살펴보면, driverClassName을 꼭 지정하지 않아도 url을 통해 DriverClassName을 얻을 수 있다. url로 지정된 외부 db가 없다면 내장 서버의 값을 반환하는데, 만약 라이브러리로 임포트되지 않았다면 해당 값을 알 수 없으므로 `Failed to determine a suitable driver class` 메시지와 함께 예외가 터진다. 처음 내장 서버를 등록하지 않았을 때 봤던 그 오류이다.
+
+## JdbcTemplateAutoConfiguration
+
+JdbcTemplate은 JDBC API를 추상화하여 간결한 코드로 데이터베이스 작업을 처리하는 API를 제공한다.
+
+JdbcTemplateAutoConfiguration을 살펴보자.
+
+- `@AutoConfiguration(after = DataSourceAutoConfiguration.class)`
+  : JdbcTemplate은 DataSource를 주입받으므로 DataSourceAutoConfiguration으로 DataSource가 구성되고 나서 JdbcTemplate을 지정한다.
+  - `@Import({})` : 내장형 db의 드라이버와 초기화 담당, JdbcTemplate 빈 생성, NamedParameterJdbcTemplate 빈 생성
+
+```java
+@AutoConfiguration(after = DataSourceAutoConfiguration.class)
+@ConditionalOnClass({ DataSource.class, JdbcTemplate.class })
+@ConditionalOnSingleCandidate(DataSource.class)
+@EnableConfigurationProperties(JdbcProperties.class)
+@Import({ DatabaseInitializationDependencyConfigurer.class, JdbcTemplateConfiguration.class,
+		NamedParameterJdbcTemplateConfiguration.class })
+public class JdbcTemplateAutoConfiguration {
+
+}
+```
+
+JdbcProperties에서 커스텀할 수 있는 설정값을 알아보자. spring.jdbc로 시작하는 설정을 통해 값을 세팅할 수 있다.
+
+```java
+@ConfigurationProperties(prefix = "spring.jdbc")
+public class JdbcProperties {
+
+	private final Template template = new Template();
+
+	public Template getTemplate() {
+		return this.template;
+	}
+
+	public static class Template {
+		private int fetchSize = -1;
+		private int maxRows = -1;
+		@DurationUnit(ChronoUnit.SECONDS)
+		private Duration queryTimeout;
+		// getter setter
+	}
+
+}
+```
+
+JdbcTemplate에서 사용하는 PreparedStatement의 쿼리 타임아웃 시간을 5초로 설정하려면 다음과 같이 application.properties 파일에 설정한다.
+
+```
+spring.jdbc.template.query-timeout=5
+```
+
+## TransactionAutoConfiguration
+
+트랜잭션을 관리하기 위한 설정을 제공하는 자동구성 클래스. 스프링은 `@Transactional`으로 트랜잭션 관리를 지원하며, TransactionAutoConfiguration은 이를 활성화하고 관련된 빈을 구성한다.
+
+PlatformTransactionManager는 다양한 데이터 액세스 기술의 트랜잭션을 추상화하는 스프링의 서비스 추상화 빈이다. PlatformTransactionManagerCustomizer는 PlatformTransactionManager의 설정을 커스터마이징해서 등록한다.
+
+```java
+@AutoConfiguration
+@ConditionalOnClass(PlatformTransactionManager.class)
+@EnableConfigurationProperties(TransactionProperties.class)
+public class TransactionAutoConfiguration {
+
+	@Bean
+	@ConditionalOnMissingBean
+	public TransactionManagerCustomizers platformTransactionManagerCustomizers(
+			ObjectProvider<PlatformTransactionManagerCustomizer<?>> customizers) {
+		return new TransactionManagerCustomizers(customizers.orderedStream().collect(Collectors.toList()));
+	}
+
+}
+```
+
+TransactionProperties를 살펴보자. spring.transaction로 시작하는 설정값을 줄 수 있다. 특이한 점은 Properties가 PlatformTransactionManagerCustomizer를 구현해서 커스터마이징 작업을 구현한다는 점이다.
+
+```java
+@ConfigurationProperties(prefix = "spring.transaction")
+public class TransactionProperties implements PlatformTransactionManagerCustomizer<AbstractPlatformTransactionManager> {
+
+	/**
+	 * Default transaction timeout. If a duration suffix is not specified, seconds will be
+	 * used.
+	 */
+	@DurationUnit(ChronoUnit.SECONDS)
+	private Duration defaultTimeout;
+
+	/**
+	 * Whether to roll back on commit failures.
+	 */
+	private Boolean rollbackOnCommitFailure;
+
+	@Override
+	public void customize(AbstractPlatformTransactionManager transactionManager) {
+		if (this.defaultTimeout != null) {
+			transactionManager.setDefaultTimeout((int) this.defaultTimeout.getSeconds());
+		}
+		if (this.rollbackOnCommitFailure != null) {
+			transactionManager.setRollbackOnCommitFailure(this.rollbackOnCommitFailure);
+		}
+	}
+
+}
+```
+
+PlatformTransactionManager의 기본 타임아웃 값을 변경하려면 spring.transaction.default-timeout 속성을 application.properties 파일에 추가하면 된다.
+
+```
+spring.transaction.default-timeout=30
+```
