@@ -1,0 +1,50 @@
+# 스프링 부트 3.0
+
+- Spring 6
+- JDK 17 이상
+- Jakarta EE 9, 10
+
+# 2.7에서 3.0으로 업그레이드
+
+## build.gradle의 스프링 부트 버전 수정
+
+```
+plugins {
+	id 'java'
+	id 'org.springframework.boot' version '3.0.6'
+	id 'io.spring.dependency-management' version '1.1.0'
+}
+
+group = 'tobyspring'
+version = '0.0.1-SNAPSHOT'
+sourceCompatibility = '17'
+```
+
+만약 `No matching variant of org.springframework.boot:spring-boot-gradle-plugin:3.0.6 was found.` 이런 오류가 난다면 메시지를 잘 읽어보고 오류 원인을 찾자. 나는 `Incompatible because this component declares an API of a component compatible with Java 17 and the consumer needed a runtime of a component compatible with Java 11` 이 메시지를 보고 인텔리제이의 빌드 설정이 11로 되어있었음을 알았다. [조졸두 님의 블로그 글](https://jojoldu.tistory.com/698)을 참고해서 인텔리제이 설정을 변경했다. intellij와 gradle은 독립적으로 실행되는 도구여서, 각 툴의 자바 설정을 17 버전으로 맞춰야한다!!
+
+버전을 올리고 나서 라이브러리 버전이 어떻게 바뀌는지, 내가 작성한 코드에 어떤 영향을 주는지 꼭 체크해야한다. 하위 라이브러리가 특정 jdk에서 동작하지 않는 경우 스프링 부트의 업그레이드 자체를 미뤄야하는 경우도 있다.
+
+## Jakarta EE 패키지명으로 변경
+
+- Jakarta EE : Java EE(자바 엔터프라이즈 표준)이 이클립스한테 넘어가서, Java 대신 Jakarta로 이름을 변경함. javax로 시작하는 패키지명을 전부 jarkarta로 변경해야함.
+- import javax.annotation.PostConstruct; → import jakarta.annotation.PostConstruct;
+
+## 타입 레벨 단독 @RequestMapping
+
+- 스프링 5까지는 @RequestMapping만 붙어도 디스패처 서블릿이 매핑 정보를 읽는데, 스프링 6부터는 @Controller까지 지정해야한다. 컨트롤러에 항상 애노테이션을 붙인다면 변경해야하는 것은 없다.
+
+```java
+@RestController
+public class HelloController {
+    private final HelloService helloService;
+
+    public HelloController(HelloService helloService) {
+        this.helloService = helloService;
+    }
+
+    @GetMapping("/hello")
+    public String hello(String name) {
+        if (name == null || name.trim().length() == 0) throw new IllegalArgumentException();
+        return helloService.sayHello(Objects.requireNonNull(name));
+    }
+```
